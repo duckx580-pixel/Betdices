@@ -1,0 +1,23 @@
+name: Copilot cloud agent
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  copilot:
+    runs-on: ubuntu-latest
+    env:
+      COPILOT_MODEL: ${{ vars.COPILOT_MODEL || 'gpt-4.1' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Copilot Cloud Agent
+        uses: github/copilot-agent-action@v1
+        with:
+          model: ${{ env.COPILOT_MODEL }}

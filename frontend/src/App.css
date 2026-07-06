@@ -1,0 +1,17 @@
+.App {
+  min-height: 100vh;
+  background: #0a0f1e;
+  color: #fff;
+}
+
+.page-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 16px 100px;
+}
+
+@media (min-width: 768px) {
+  .page-container {
+    padding: 0 24px 100px;
+  }
+}
