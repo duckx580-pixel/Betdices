@@ -4,10 +4,11 @@ import { Dice5, ArrowRight, ShieldCheck, Zap, Trophy } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
 
-export default function Login() {
-  const { user, login, loading } = useAuth();
+export default function Register() {
+  const { user, register, loading } = useAuth();
   const [growId, setGrowId] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
 
@@ -18,12 +19,14 @@ export default function Login() {
     e.preventDefault();
     if (!growId.trim() || growId.trim().length < 3) return toast.error("Invalid GrowID");
     if (!password || password.length < 6) return toast.error("Password must be at least 6 characters");
+    if (password !== confirmPassword) return toast.error("Passwords do not match");
+
     setBusy(true);
     try {
-      await login(growId.trim().toUpperCase(), password);
+      await register(growId.trim().toUpperCase(), password);
       navigate("/", { replace: true });
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Login failed");
+      toast.error(err.response?.data?.detail || "Registration failed");
     } finally {
       setBusy(false);
     }
@@ -60,8 +63,8 @@ export default function Login() {
       <div className="md:w-[440px] bg-[#131c2f] border-l border-white/5 flex items-center justify-center p-8 md:p-12">
         <form onSubmit={submit} className="w-full max-w-sm space-y-5">
           <div>
-            <h2 className="text-2xl font-extrabold">Sign in with GrowID</h2>
-            <p className="text-slate-400 text-sm mt-1">Enter your Growtopia ID and password.</p>
+            <h2 className="text-2xl font-extrabold">Create your account</h2>
+            <p className="text-slate-400 text-sm mt-1">Choose a GrowID and secure password.</p>
           </div>
           <div>
             <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">GrowID</label>
@@ -69,20 +72,30 @@ export default function Login() {
               type="text"
               value={growId}
               onChange={(e) => setGrowId(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
-              placeholder="HAYABUSAN"
+              placeholder="PLAYER123"
               maxLength={18}
               autoFocus
               className="mt-1.5 w-full h-12 px-4 rounded-xl bg-[#0a0f1e] border border-white/10 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#3583ff]/50 font-mono tracking-wide font-bold"
             />
           </div>
-
           <div>
             <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Password</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
+              placeholder="At least 6 characters"
+              minLength={6}
+              className="mt-1.5 w-full h-12 px-4 rounded-xl bg-[#0a0f1e] border border-white/10 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#3583ff]/50 font-semibold"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Confirm Password</label>
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Repeat your password"
               minLength={6}
               className="mt-1.5 w-full h-12 px-4 rounded-xl bg-[#0a0f1e] border border-white/10 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#3583ff]/50 font-semibold"
             />
@@ -90,16 +103,16 @@ export default function Login() {
 
           <button
             type="submit"
-            disabled={busy || !growId.trim() || !password}
+            disabled={busy || !growId.trim() || !password || !confirmPassword}
             className="w-full h-12 rounded-xl bg-[#3583ff] hover:bg-[#2872ef] disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-bold text-white flex items-center justify-center gap-2"
           >
-            {busy ? "Signing in..." : <>Continue <ArrowRight className="w-4 h-4" /></>}
+            {busy ? "Creating account..." : <>Register <ArrowRight className="w-4 h-4" /></>}
           </button>
 
           <p className="text-sm text-slate-400 text-center">
-            New here?{" "}
-            <Link to="/register" className="text-[#5d97ff] hover:text-[#7cabff] font-semibold">
-              Create account
+            Already have an account?{" "}
+            <Link to="/login" className="text-[#5d97ff] hover:text-[#7cabff] font-semibold">
+              Sign in
             </Link>
           </p>
 

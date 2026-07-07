@@ -9,6 +9,7 @@ import Wallet from "./pages/Wallet";
 import Chat from "./pages/Chat";
 import GamePlay from "./pages/GamePlay";
 import Login from "./pages/Login";
+import Register from "./pages/Register";
 import Admin from "./pages/Admin";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 
@@ -37,6 +38,7 @@ function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
             <Route path="/admin" element={<PrivateRoute adminOnly><Admin /></PrivateRoute>} />
             <Route path="/" element={<PrivateRoute><Layout /></PrivateRoute>}>
               <Route index element={<Home />} />
