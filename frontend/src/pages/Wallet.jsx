@@ -2,23 +2,36 @@ import React, { useEffect, useState } from "react";
 import { ArrowDownToLine, ArrowUpFromLine, Send } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useAuth } from "../context/AuthContext";
-import { depositApi, withdrawApi } from "../lib/api";
+import { depositApi, logApiError, withdrawApi } from "../lib/api";
 import DepositHub from "../components/wallet/DepositHub";
 import WithdrawFlow from "../components/wallet/WithdrawFlow";
 import TipFlow from "../components/wallet/TipFlow";
 import TxHistory from "../components/wallet/TxHistory";
 
 export default function Wallet() {
-  const { balance } = useAuth();
+  const { balance, logout } = useAuth();
   const [deposits, setDeposits] = useState([]);
   const [withdraws, setWithdraws] = useState([]);
+  const [historyError, setHistoryError] = useState("");
 
   const loadHistory = async () => {
     try {
       const [d, w] = await Promise.all([depositApi.mine(), withdrawApi.mine()]);
       setDeposits(d || []);
       setWithdraws(w || []);
-    } catch (e) {}
+      setHistoryError("");
+    } catch (e) {
+      logApiError("wallet-load-history", e);
+      const status = e?.response?.status;
+      const detail = e?.response?.data?.detail || e?.message || "Failed to load wallet history";
+      setHistoryError(detail);
+      if (status === 401) logout();
+      console.error("[Wallet] history fetch failed", {
+        status,
+        data: e?.response?.data,
+        headers: e?.response?.headers,
+      });
+    }
   };
 
   useEffect(() => {
@@ -30,6 +43,7 @@ export default function Wallet() {
   return (
     <div className="pt-2">
       <h1 className="text-2xl md:text-3xl font-extrabold mb-4">Wallet</h1>
+      {historyError ? <p className="mb-4 text-sm text-rose-300">{historyError}</p> : null}
 
       <div className="grid grid-cols-3 gap-3 mb-6">
         <BalanceCard label="Diamond Locks" amount={balance.dl.toFixed(2)} unit="DL" gradient="from-teal-500/20 to-teal-500/5" accent="text-teal-400" />

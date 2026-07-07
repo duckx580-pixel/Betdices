@@ -21,11 +21,12 @@ export default function Login() {
     if (!password || password.length < 6) return toast.error("Password must be at least 6 characters");
     setBusy(true);
     try {
-      await login(growId.trim().toUpperCase(), password);
+      const loggedInUser = await login(growId.trim().toUpperCase(), password);
+      if (!loggedInUser) throw new Error("Login succeeded but user payload is empty");
       navigate("/", { replace: true });
     } catch (err) {
       logApiError("login-submit", err);
-      toast.error(err.response?.data?.detail || "Login failed");
+      toast.error(err.response?.data?.detail || err.message || "Login failed");
     } finally {
       setBusy(false);
     }
