@@ -1,32 +1,25 @@
 import React, { useState } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
-import { Dice5, ArrowRight, ShieldCheck, Zap, Trophy, Lock } from "lucide-react";
+import { Dice5, ArrowRight, ShieldCheck, Zap, Trophy } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
 
 export default function Login() {
   const { user, login, loading } = useAuth();
   const [growId, setGrowId] = useState("");
-  const [adminPass, setAdminPass] = useState("");
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
 
   if (loading) return null;
   if (user) return <Navigate to="/" replace />;
 
-  const isAdmin = growId.trim().toUpperCase() === "HAYABUSAN";
-
   const submit = async (e) => {
     e.preventDefault();
     if (!growId.trim() || growId.trim().length < 3) return;
-    if (isAdmin && !adminPass) {
-      toast.error("Admin password required");
-      return;
-    }
     setBusy(true);
     try {
-      await login(growId.trim().toUpperCase(), adminPass);
-      navigate("/");
+      await login(growId.trim().toUpperCase());
+      navigate("/", { replace: true });
     } catch (err) {
       toast.error(err.response?.data?.detail || "Login failed");
     } finally {
@@ -80,22 +73,6 @@ export default function Login() {
               className="mt-1.5 w-full h-12 px-4 rounded-xl bg-[#0a0f1e] border border-white/10 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#3583ff]/50 font-mono tracking-wide font-bold"
             />
           </div>
-
-          {isAdmin && (
-            <div className="pop-in">
-              <label className="text-xs font-semibold text-yellow-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Lock className="w-3 h-3" /> Admin Password
-              </label>
-              <input
-                type="password"
-                value={adminPass}
-                onChange={(e) => setAdminPass(e.target.value)}
-                placeholder="Owner password"
-                className="mt-1.5 w-full h-12 px-4 rounded-xl bg-[#0a0f1e] border border-yellow-500/30 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-yellow-500/40"
-              />
-              <p className="text-xs text-yellow-500/80 mt-1.5">Admin account detected — password required.</p>
-            </div>
-          )}
 
           <button
             type="submit"

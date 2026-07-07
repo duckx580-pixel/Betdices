@@ -117,7 +117,6 @@ async def credit_user(user_id: str, dl: float = 0, bgl: float = 0, wl: float = 0
 # ---- Models ----
 class LoginReq(BaseModel):
     grow_id: str
-    admin_password: Optional[str] = None
 
 
 class DepositReq(BaseModel):
@@ -163,9 +162,6 @@ async def login(req: LoginReq):
         raise HTTPException(400, "Invalid GrowID")
 
     is_admin_attempt = grow_id == ADMIN_GROW_ID
-    if is_admin_attempt:
-        if req.admin_password != ADMIN_PASSWORD:
-            raise HTTPException(401, "Admin password required and must be correct")
 
     user = await db.users.find_one({"grow_id": grow_id}, {"_id": 0})
     if not user:

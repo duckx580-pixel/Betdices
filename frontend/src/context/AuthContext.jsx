@@ -27,8 +27,8 @@ export function AuthProvider({ children }) {
     bootstrap();
   }, [bootstrap]);
 
-  const login = async (growId, adminPassword) => {
-    const { token, user: u } = await authApi.login(growId, adminPassword || undefined);
+  const login = async (growId) => {
+    const { token, user: u } = await authApi.login(growId);
     localStorage.setItem("betdice_token", token);
     setUser(u);
     return u;
