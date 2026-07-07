@@ -1,9 +1,34 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-export const API = `${BACKEND_URL}/api`;
+const normalizeBaseUrl = (value) => {
+  if (!value || typeof value !== "string") return "";
+  return value.trim().replace(/\/+$/, "");
+};
+
+const BACKEND_URL = normalizeBaseUrl(process.env.REACT_APP_BACKEND_URL);
+export const API = BACKEND_URL ? `${BACKEND_URL}/api` : "/api";
 
 export const api = axios.create({ baseURL: API });
+
+export const logApiError = (context, err) => {
+  const details = {
+    context,
+    message: err?.message,
+    code: err?.code,
+    method: err?.config?.method?.toUpperCase?.(),
+    url: err?.config?.url,
+    baseURL: err?.config?.baseURL,
+    status: err?.response?.status,
+    responseData: err?.response?.data,
+    isNetworkOrCorsError: !err?.response && !!err?.request,
+  };
+
+  console.error("[BetDice API Error]", details);
+};
+
+if (!BACKEND_URL) {
+  console.warn("[BetDice API] REACT_APP_BACKEND_URL is not set. Falling back to relative /api.");
+}
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("betdice_token");
@@ -14,6 +39,7 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (r) => r,
   (err) => {
+    logApiError("axios-response-interceptor", err);
     if (err.response?.status === 401) {
       // token invalid, clear
       localStorage.removeItem("betdice_token");
