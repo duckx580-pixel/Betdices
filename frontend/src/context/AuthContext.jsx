@@ -69,12 +69,34 @@ export function AuthProvider({ children }) {
 
   const register = async (growId, password) => {
     const payload = await authApi.register(growId, password);
+    console.log("Raw Register Response:", payload);
     const token = payload?.token || payload?.access_token;
     const u = payload?.user;
-    if (!token || !u) throw new Error("Invalid register response from server");
-    saveSession(token, u);
-    setUser(u);
-    return u;
+    if (token && u) {
+      saveSession(token, u);
+      setUser(u);
+      return u;
+    }
+
+    const responseMessage = [
+      payload?.message,
+      payload?.detail,
+      payload?.msg,
+      payload?.data?.message,
+      payload?.data?.detail,
+      payload?.data?.msg,
+    ].find((value) => typeof value === "string" && value.trim().length > 0);
+
+    const indicatesSuccess =
+      payload?.success === true ||
+      payload?.ok === true ||
+      (typeof responseMessage === "string" && /(success|registered|created|ok)/i.test(responseMessage));
+
+    if (indicatesSuccess) {
+      return payload;
+    }
+
+    throw new Error("Invalid register response from server");
   };
 
   const refresh = async () => {
