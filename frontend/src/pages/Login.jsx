@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useNavigate, Navigate, Link } from "react-router-dom";
 import { Dice5, ArrowRight, ShieldCheck, Zap, Trophy } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
+import { logApiError } from "../lib/api";
 import { toast } from "sonner";
 
 export default function Login() {
@@ -23,6 +24,7 @@ export default function Login() {
       await login(growId.trim().toUpperCase(), password);
       navigate("/", { replace: true });
     } catch (err) {
+      logApiError("login-submit", err);
       toast.error(err.response?.data?.detail || "Login failed");
     } finally {
       setBusy(false);
