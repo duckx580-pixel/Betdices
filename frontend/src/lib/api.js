@@ -23,7 +23,8 @@ api.interceptors.response.use(
 );
 
 export const authApi = {
-  login: (grow_id) => api.post("/auth/login", { grow_id }).then((r) => r.data),
+  login: (grow_id, password) => api.post("/auth/login", { grow_id, password }).then((r) => r.data),
+  register: (grow_id, password) => api.post("/auth/register", { grow_id, password }).then((r) => r.data),
   me: () => api.get("/auth/me").then((r) => r.data),
 };
 

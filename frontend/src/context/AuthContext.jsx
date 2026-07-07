@@ -27,8 +27,15 @@ export function AuthProvider({ children }) {
     bootstrap();
   }, [bootstrap]);
 
-  const login = async (growId) => {
-    const { token, user: u } = await authApi.login(growId);
+  const login = async (growId, password) => {
+    const { token, user: u } = await authApi.login(growId, password);
+    localStorage.setItem("betdice_token", token);
+    setUser(u);
+    return u;
+  };
+
+  const register = async (growId, password) => {
+    const { token, user: u } = await authApi.register(growId, password);
     localStorage.setItem("betdice_token", token);
     setUser(u);
     return u;
@@ -52,7 +59,7 @@ export function AuthProvider({ children }) {
   const balance = user?.balance || { dl: 0, bgl: 0, wl: 0 };
 
   return (
-    <AuthContext.Provider value={{ user, balance, login, logout, refresh, loading, setUser }}>
+    <AuthContext.Provider value={{ user, balance, login, register, logout, refresh, loading, setUser }}>
       {children}
     </AuthContext.Provider>
   );

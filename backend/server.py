@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
+from passlib.context import CryptContext
 
 
 ROOT_DIR = Path(__file__).parent
@@ -21,8 +22,9 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "betdice-secret")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "hongprokh123")
 ADMIN_GROW_ID = os.environ.get("ADMIN_GROW_ID", "HAYABUSAN").upper()
+DEFAULT_ADMIN_PASSWORD_HASH = "$2b$12$5nP5rjQRWCbPQv83Vx8COuFpa4Jt7q7h7EGaK4QjvFjbXkkEPlrLK"  # hongprokh123
+ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", DEFAULT_ADMIN_PASSWORD_HASH)
 QRIS_IMAGE_URL = os.environ.get("QRIS_IMAGE_URL", "")
 DANA_PHONE = os.environ.get("DANA_PHONE", "")
 DANA_NAME = os.environ.get("DANA_NAME", "")
@@ -32,6 +34,7 @@ RATE_USD_PER_DL = float(os.environ.get("RATE_USD_PER_DL", "0.65"))
 
 app = FastAPI()
 api = APIRouter(prefix="/api")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 # ---- Utils ----
@@ -56,6 +59,17 @@ def make_default_user(grow_id: str, is_admin: bool = False) -> Dict[str, Any]:
         "is_admin": is_admin,
         "created_at": now_iso(),
     }
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        return pwd_context.verify(password, password_hash)
+    except Exception:
+        return False
 
 
 def public_user(u: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,6 +131,12 @@ async def credit_user(user_id: str, dl: float = 0, bgl: float = 0, wl: float = 0
 # ---- Models ----
 class LoginReq(BaseModel):
     grow_id: str
+    password: str
+
+
+class RegisterReq(BaseModel):
+    grow_id: str
+    password: str
 
 
 class DepositReq(BaseModel):
@@ -158,16 +178,21 @@ class ApproveReq(BaseModel):
 @api.post("/auth/login")
 async def login(req: LoginReq):
     grow_id = req.grow_id.strip().upper()
+    password = req.password
     if not grow_id or len(grow_id) < 3:
         raise HTTPException(400, "Invalid GrowID")
+    if not password or len(password) < 6:
+        raise HTTPException(400, "Invalid password")
 
     is_admin_attempt = grow_id == ADMIN_GROW_ID
-
     user = await db.users.find_one({"grow_id": grow_id}, {"_id": 0})
-    if not user:
-        user = make_default_user(grow_id, is_admin=is_admin_attempt)
-        # give admin a starting demo balance
-        if is_admin_attempt:
+
+    if is_admin_attempt:
+        if not verify_password(password, ADMIN_PASSWORD_HASH):
+            raise HTTPException(401, "Invalid credentials")
+        if not user:
+            user = make_default_user(grow_id, is_admin=True)
+            user["password_hash"] = ADMIN_PASSWORD_HASH
             user["balance"] = {"dl": 100.0, "bgl": 2.0, "wl": 0.0}
             user["vip"] = {
                 "level": "Gold 1",
@@ -176,12 +201,54 @@ async def login(req: LoginReq):
                 "xp": 6200,
                 "xp_to_next": 10000,
             }
-        await db.users.insert_one(user)
-    else:
-        # ensure admin flag consistent
-        if is_admin_attempt and not user.get("is_admin"):
-            await db.users.update_one({"id": user["id"]}, {"$set": {"is_admin": True}})
+            await db.users.insert_one(user)
+        else:
+            await db.users.update_one(
+                {"id": user["id"]},
+                {"$set": {"is_admin": True, "password_hash": ADMIN_PASSWORD_HASH}},
+            )
             user["is_admin"] = True
+            user["password_hash"] = ADMIN_PASSWORD_HASH
+    else:
+        if not user:
+            raise HTTPException(401, "Invalid credentials")
+        password_hash = user.get("password_hash")
+        if not password_hash or not verify_password(password, password_hash):
+            raise HTTPException(401, "Invalid credentials")
+
+    token = make_token(user)
+    return {"token": token, "user": public_user(user)}
+
+
+@api.post("/auth/register")
+async def register(req: RegisterReq):
+    grow_id = req.grow_id.strip().upper()
+    password = req.password
+    if not grow_id or len(grow_id) < 3:
+        raise HTTPException(400, "Invalid GrowID")
+    if not password or len(password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+
+    existing = await db.users.find_one({"grow_id": grow_id}, {"_id": 0, "id": 1})
+    if existing:
+        raise HTTPException(409, "GrowID already exists")
+
+    is_admin = grow_id == ADMIN_GROW_ID
+    if is_admin and not verify_password(password, ADMIN_PASSWORD_HASH):
+        raise HTTPException(401, "Invalid admin password")
+
+    user = make_default_user(grow_id, is_admin=is_admin)
+    user["password_hash"] = ADMIN_PASSWORD_HASH if is_admin else hash_password(password)
+    if is_admin:
+        user["balance"] = {"dl": 100.0, "bgl": 2.0, "wl": 0.0}
+        user["vip"] = {
+            "level": "Gold 1",
+            "next_level": "Gold 2",
+            "progress": 62,
+            "xp": 6200,
+            "xp_to_next": 10000,
+        }
+    await db.users.insert_one(user)
 
     token = make_token(user)
     return {"token": token, "user": public_user(user)}
