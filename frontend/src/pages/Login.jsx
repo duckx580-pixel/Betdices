@@ -26,7 +26,14 @@ export default function Login() {
       navigate("/", { replace: true });
     } catch (err) {
       logApiError("login-submit", err);
-      toast.error(err.response?.data?.detail || err.message || "Login failed");
+      const serverData = err?.response?.data;
+      if (serverData?.message || serverData?.error) {
+        console.log("Server Login Error Body:", {
+          message: serverData.message,
+          error: serverData.error,
+        });
+      }
+      toast.error(serverData?.detail || serverData?.message || serverData?.error || err.message || "Login failed");
     } finally {
       setBusy(false);
     }

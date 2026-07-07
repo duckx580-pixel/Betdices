@@ -58,6 +58,7 @@ export function AuthProvider({ children }) {
 
   const login = async (growId, password) => {
     const payload = await authApi.login(growId, password);
+    console.log("Raw Server Response:", payload);
     const token = payload?.token || payload?.access_token;
     const u = payload?.user;
     if (!token || !u) throw new Error("Invalid login response from server");
