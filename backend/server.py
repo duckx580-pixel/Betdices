@@ -6,6 +6,7 @@ import os
 import logging
 import uuid
 import jwt
+import uvicorn
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -625,3 +626,11 @@ logger = logging.getLogger(__name__)
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+
+if __name__ == "__main__":
+    try:
+        port = int(os.environ.get("PORT", "8080"))
+    except ValueError:
+        port = 8080
+    uvicorn.run(app, host="0.0.0.0", port=port)
