@@ -1,11 +1,14 @@
 import axios from "axios";
 
-const normalizeBaseUrl = (value) => {
+const normalizeBackendOrigin = (value) => {
   if (!value || typeof value !== "string") return "";
-  return value.trim().replace(/\/+$/, "");
+  return value
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\/api$/i, "");
 };
 
-const BACKEND_URL = normalizeBaseUrl(process.env.REACT_APP_BACKEND_URL);
+const BACKEND_URL = normalizeBackendOrigin(process.env.REACT_APP_BACKEND_URL);
 const TOKEN_KEY = "betdice_token";
 export const API = BACKEND_URL ? `${BACKEND_URL}/api` : "/api";
 
@@ -32,6 +35,16 @@ if (!BACKEND_URL) {
 }
 
 api.interceptors.request.use((config) => {
+  if (typeof config.url === "string" && !/^https?:\/\//i.test(config.url)) {
+    if (config.url.startsWith("/")) {
+      config.url = `${API}${config.url}`;
+      config.baseURL = undefined;
+    } else if (!config.url.startsWith("api/")) {
+      config.url = `${API}/${config.url}`;
+      config.baseURL = undefined;
+    }
+  }
+
   const token = localStorage.getItem(TOKEN_KEY);
   if (token && token !== "undefined" && token !== "null") {
     if (!config.headers) config.headers = {};
