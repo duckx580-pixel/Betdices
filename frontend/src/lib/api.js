@@ -6,6 +6,7 @@ const normalizeBaseUrl = (value) => {
 };
 
 const BACKEND_URL = normalizeBaseUrl(process.env.REACT_APP_BACKEND_URL);
+const TOKEN_KEY = "betdice_token";
 export const API = BACKEND_URL ? `${BACKEND_URL}/api` : "/api";
 
 export const api = axios.create({ baseURL: API });
@@ -31,8 +32,13 @@ if (!BACKEND_URL) {
 }
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("betdice_token");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (token && token !== "undefined" && token !== "null") {
+    if (!config.headers) config.headers = {};
+    config.headers.Authorization = "Bearer " + token;
+  } else {
+    localStorage.removeItem(TOKEN_KEY);
+  }
   return config;
 });
 
@@ -42,7 +48,7 @@ api.interceptors.response.use(
     logApiError("axios-response-interceptor", err);
     if (err.response?.status === 401) {
       // token invalid, clear
-      localStorage.removeItem("betdice_token");
+      localStorage.removeItem(TOKEN_KEY);
     }
     return Promise.reject(err);
   }
