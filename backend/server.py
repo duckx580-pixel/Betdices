@@ -8,6 +8,8 @@ import uuid
 import jwt
 import uvicorn
 import secrets
+import asyncio
+import random
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Set
@@ -178,62 +180,97 @@ class ApproveReq(BaseModel):
 
 
 class CaseItemIn(BaseModel):
-    id: Optional[str] = None
-    name: str
-    value: float
+    growtopia_item_id: str
     probability_percentage: float
 
 
 class CaseUpsertReq(BaseModel):
     name: str
     image: Optional[str] = None
-    price_dl: float
+    price_bgl: float
     is_active: bool = True
+    popularity_score: float = 0.0
     items: List[CaseItemIn]
 
 
 class BattleCreateReq(BaseModel):
     selected_cases: List[str]
     mode: str = "normal"  # normal | jackpot
+    player_slots: int = 2
+    add_bots: bool = False
+    bot_count: int = 0
 
 
 battle_connections: Dict[str, Set[WebSocket]] = {}
 
+DEFAULT_GROWTOPIA_ITEMS = [
+    {"id": "rayman-fist", "name": "Rayman's Fist", "icon_url": "https://cdn.discordapp.com/emojis/1181482977732458578.webp", "market_value_bgl": 355.0},
+    {"id": "ghc", "name": "Golden Heart Crystal", "icon_url": "https://cdn.discordapp.com/emojis/1181483008904509491.webp", "market_value_bgl": 280.0},
+    {"id": "magplant", "name": "Magplant 5000", "icon_url": "https://cdn.discordapp.com/emojis/1181482994073462844.webp", "market_value_bgl": 249.0},
+    {"id": "gaia-beacon", "name": "Gaia's Beacon", "icon_url": "https://cdn.discordapp.com/emojis/1181483023798482974.webp", "market_value_bgl": 198.0},
+    {"id": "dreamcatcher", "name": "Dreamcatcher Staff", "icon_url": "https://cdn.discordapp.com/emojis/1181482960913305671.webp", "market_value_bgl": 155.0},
+    {"id": "lgrid", "name": "Legendary Dragon", "icon_url": "https://cdn.discordapp.com/emojis/1181482947487340604.webp", "market_value_bgl": 140.0},
+    {"id": "diamond-lock", "name": "Diamond Lock", "icon_url": "https://cdn.discordapp.com/emojis/1181482934019432600.webp", "market_value_bgl": 1.0},
+    {"id": "gold-lock", "name": "Gold Lock", "icon_url": "https://cdn.discordapp.com/emojis/1181482916038465646.webp", "market_value_bgl": 0.01},
+]
 
-def probability_to_basis(probability_percentage: float) -> int:
+BOT_NAME_POOL = [
+    "VoidRusher",
+    "NeonPixel",
+    "LuckyGnome",
+    "ShadowBrick",
+    "BoltFarmer",
+    "NightClover",
+    "AstraWrench",
+    "FrostCrate",
+]
+
+
+def probability_to_points(probability_percentage: float) -> int:
     try:
         value = Decimal(str(probability_percentage))
     except (InvalidOperation, TypeError):
         raise HTTPException(400, "Invalid probability value")
     if value <= 0:
         raise HTTPException(400, "Probability must be > 0")
-    basis = (value * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    return int(basis)
+    points = (value * Decimal("10000")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return int(points)
 
 
-def normalize_case_items(items: List[CaseItemIn]) -> List[Dict[str, Any]]:
+async def normalize_case_items(items: List[CaseItemIn]) -> List[Dict[str, Any]]:
     if not items:
         raise HTTPException(400, "Case must contain at least one item")
+    growtopia_item_ids = [item.growtopia_item_id for item in items]
+    if len(set(growtopia_item_ids)) != len(growtopia_item_ids):
+        raise HTTPException(400, "Duplicate Growtopia items are not allowed in one case")
+    growtopia_items = await db.growtopia_items.find(
+        {"id": {"$in": growtopia_item_ids}},
+        {"_id": 0},
+    ).to_list(len(growtopia_item_ids))
+    growtopia_map = {item["id"]: item for item in growtopia_items}
+    missing_ids = [item_id for item_id in growtopia_item_ids if item_id not in growtopia_map]
+    if missing_ids:
+        raise HTTPException(400, f"Unknown Growtopia item ids: {', '.join(missing_ids)}")
+
     normalized = []
-    total_basis = 0
+    total_points = 0
     for item in items:
-        if not item.name.strip():
-            raise HTTPException(400, "Case item name is required")
-        if item.value < 0:
-            raise HTTPException(400, "Case item value must be >= 0")
-        basis = probability_to_basis(item.probability_percentage)
-        total_basis += basis
+        gt_item = growtopia_map[item.growtopia_item_id]
+        points = probability_to_points(item.probability_percentage)
+        total_points += points
         normalized.append(
             {
-                "id": item.id or str(uuid.uuid4()),
-                "name": item.name.strip(),
-                "value": round(float(item.value), 4),
-                "probability_percentage": float((Decimal(basis) / Decimal("100")).quantize(Decimal("0.01"))),
-                "probability_basis": basis,
+                "id": str(uuid.uuid4()),
+                "growtopia_item_id": gt_item["id"],
+                "name": gt_item["name"],
+                "icon_url": gt_item.get("icon_url"),
+                "market_value_bgl": round(float(gt_item.get("market_value_bgl", 0)), 4),
+                "probability_percentage": float((Decimal(points) / Decimal("10000")).quantize(Decimal("0.0001"))),
+                "probability_points": points,
             }
         )
-    if total_basis != 10000:
-        raise HTTPException(400, "Total probability_percentage must equal exactly 100.00")
+    if total_points != 1000000:
+        raise HTTPException(400, "Total probability_percentage must equal exactly 100.0000")
     return normalized
 
 
@@ -291,6 +328,94 @@ async def battle_ws_broadcast(battle_id: str, payload: Dict[str, Any]):
         battle_ws_disconnect(battle_id, socket)
 
 
+def make_bot_player_profile() -> Dict[str, Any]:
+    alias = random.choice(BOT_NAME_POOL)
+    suffix = f"{random.randint(1000, 9999)}"
+    username = f"{alias}_{suffix}"
+    return {
+        "id": f"bot-{uuid.uuid4()}",
+        "username": username,
+        "avatar": f"https://i.pravatar.cc/120?u={username}",
+    }
+
+
+async def ensure_bot_user() -> Dict[str, Any]:
+    profile = make_bot_player_profile()
+    doc = {
+        "id": profile["id"],
+        "grow_id": profile["username"].upper(),
+        "username": profile["username"],
+        "avatar": profile["avatar"],
+        "balance": {"dl": 10000.0, "bgl": 10000.0, "wl": 0.0},
+        "vip": {
+            "level": "Diamond 1",
+            "next_level": "Diamond 2",
+            "progress": 30,
+            "xp": 3000,
+            "xp_to_next": 10000,
+        },
+        "is_admin": False,
+        "is_bot": True,
+        "created_at": now_iso(),
+    }
+    await db.users.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+async def fill_battle_with_bots(battle_id: str):
+    battle_doc = await db.battles.find_one({"id": battle_id}, {"_id": 0})
+    if not battle_doc or battle_doc.get("battle_status") != "waiting":
+        return
+    if not battle_doc.get("add_bots"):
+        return
+
+    players = list(battle_doc.get("players", []))
+    player_slots = int(battle_doc.get("player_slots", 2))
+    configured_bot_count = int(battle_doc.get("bot_count", 0))
+    open_slots = max(player_slots - len(players), 0)
+    bots_to_add = min(open_slots, configured_bot_count)
+    if bots_to_add <= 0:
+        return
+
+    totals = dict(battle_doc.get("totals_by_player", {}))
+    for _ in range(bots_to_add):
+        bot_user = await ensure_bot_user()
+        player_data = {
+            "user_id": bot_user["id"],
+            "username": bot_user["username"],
+            "avatar": bot_user.get("avatar"),
+            "is_bot": True,
+        }
+        players.append(player_data)
+        totals[bot_user["id"]] = 0.0
+        log_doc = await create_battle_log(
+            battle_id,
+            "PlayerJoined",
+            {
+                "user_id": bot_user["id"],
+                "username": bot_user["username"],
+                "player_count": len(players),
+                "is_bot": True,
+            },
+            actor_user_id=bot_user["id"],
+        )
+        await battle_ws_broadcast(battle_id, {"type": log_doc["event_type"], "log": log_doc})
+
+    await db.battles.update_one(
+        {"id": battle_id},
+        {"$set": {"players": players, "totals_by_player": totals, "updated_at": now_iso()}},
+    )
+
+
+async def schedule_battle_bot_fill(battle_id: str, delay_seconds: int = 30):
+    await asyncio.sleep(delay_seconds)
+    try:
+        await fill_battle_with_bots(battle_id)
+    except Exception:
+        logger.exception("Failed to auto-fill battle with bots")
+
+
 def choose_weighted_player(weights: List[int]) -> int:
     total = sum(weights)
     if total <= 0:
@@ -312,39 +437,51 @@ async def open_case_service(case_id: str, user_id: str, context: Optional[Dict[s
     if not user:
         raise HTTPException(404, "User not found")
 
-    price = round(float(case_doc.get("price_dl", 0)), 4)
-    current_dl = float(user.get("balance", {}).get("dl", 0))
-    if current_dl < price:
-        raise HTTPException(400, "Insufficient DL balance")
+    price_bgl = case_doc.get("price_bgl")
+    using_bgl = price_bgl is not None
+    if using_bgl:
+        price = round(float(price_bgl), 4)
+        user_balance = float(user.get("balance", {}).get("bgl", 0))
+        if user_balance < price:
+            raise HTTPException(400, "Insufficient BGL balance")
+    else:
+        price = round(float(case_doc.get("price_dl", 0)), 4)
+        user_balance = float(user.get("balance", {}).get("dl", 0))
+        if user_balance < price:
+            raise HTTPException(400, "Insufficient DL balance")
 
     items = case_doc.get("items", [])
     if not items:
         raise HTTPException(400, "Case has no prizes")
-    weights = [int(i.get("probability_basis", 0)) for i in items]
-    if not all(w > 0 for w in weights) or sum(weights) != 10000:
+    weights = [int(i.get("probability_points", i.get("probability_basis", 0))) for i in items]
+    valid_total = 1000000 if any(i.get("probability_points") is not None for i in items) else 10000
+    if not all(w > 0 for w in weights) or sum(weights) != valid_total:
         raise HTTPException(400, "Case probability configuration is invalid")
 
     chosen_index = choose_weighted_player(weights)
     selected_item = items[chosen_index]
-    selected_value = round(float(selected_item.get("value", 0)), 4)
+    selected_value = round(float(selected_item.get("market_value_bgl", selected_item.get("value", 0))), 4)
     net = round(selected_value - price, 4)
 
-    await db.users.update_one(
-        {"id": user_id},
-        {"$inc": {"balance.dl": net}},
-    )
+    balance_field = "balance.bgl" if using_bgl else "balance.dl"
+    await db.users.update_one({"id": user_id}, {"$inc": {balance_field: net}})
+    await db.cases.update_one({"id": case_id}, {"$inc": {"opens_count": 1}})
     updated_user = await db.users.find_one({"id": user_id}, {"_id": 0})
 
     open_doc = {
         "id": str(uuid.uuid4()),
         "case_id": case_doc["id"],
         "case_name": case_doc["name"],
-        "case_price_dl": price,
+        "case_price_bgl": price if using_bgl else None,
+        "case_price_dl": None if using_bgl else price,
         "user_id": user["id"],
         "username": user.get("username"),
         "item": {
             "id": selected_item["id"],
+            "growtopia_item_id": selected_item.get("growtopia_item_id"),
             "name": selected_item["name"],
+            "icon_url": selected_item.get("icon_url"),
+            "market_value_bgl": selected_value,
             "value": selected_value,
             "probability_percentage": selected_item["probability_percentage"],
         },
@@ -694,6 +831,11 @@ async def game_history(user=Depends(get_current_user)):
 
 
 # ---- Cases ----
+@api.get("/growtopia-items")
+async def list_growtopia_items():
+    return await db.growtopia_items.find({}, {"_id": 0}).sort("market_value_bgl", -1).to_list(500)
+
+
 @api.get("/cases")
 async def list_cases(active_only: bool = True):
     query = {"is_active": True} if active_only else {}
@@ -722,15 +864,19 @@ async def open_case(case_id: str, user=Depends(get_current_user)):
 
 @api.post("/admin/cases")
 async def create_case(req: CaseUpsertReq, _=Depends(require_admin)):
-    if req.price_dl <= 0:
-        raise HTTPException(400, "price_dl must be > 0")
-    items = normalize_case_items(req.items)
+    if req.price_bgl <= 0 or req.price_bgl > 400:
+        raise HTTPException(400, "price_bgl must be > 0 and <= 400")
+    if not req.name.strip():
+        raise HTTPException(400, "Case name is required")
+    items = await normalize_case_items(req.items)
     now = now_iso()
     doc = {
         "id": str(uuid.uuid4()),
         "name": req.name.strip(),
         "image": req.image,
-        "price_dl": round(req.price_dl, 4),
+        "price_bgl": round(req.price_bgl, 4),
+        "popularity_score": round(float(req.popularity_score or 0), 4),
+        "opens_count": 0,
         "is_active": req.is_active,
         "items": items,
         "created_at": now,
@@ -744,13 +890,16 @@ async def create_case(req: CaseUpsertReq, _=Depends(require_admin)):
 @api.put("/admin/cases/{case_id}")
 async def update_case(case_id: str, req: CaseUpsertReq, _=Depends(require_admin)):
     await ensure_case_exists(case_id)
-    if req.price_dl <= 0:
-        raise HTTPException(400, "price_dl must be > 0")
-    items = normalize_case_items(req.items)
+    if req.price_bgl <= 0 or req.price_bgl > 400:
+        raise HTTPException(400, "price_bgl must be > 0 and <= 400")
+    if not req.name.strip():
+        raise HTTPException(400, "Case name is required")
+    items = await normalize_case_items(req.items)
     update_doc = {
         "name": req.name.strip(),
         "image": req.image,
-        "price_dl": round(req.price_dl, 4),
+        "price_bgl": round(req.price_bgl, 4),
+        "popularity_score": round(float(req.popularity_score or 0), 4),
         "is_active": req.is_active,
         "items": items,
         "updated_at": now_iso(),
@@ -758,6 +907,11 @@ async def update_case(case_id: str, req: CaseUpsertReq, _=Depends(require_admin)
     await db.cases.update_one({"id": case_id}, {"$set": update_doc})
     updated = await db.cases.find_one({"id": case_id}, {"_id": 0})
     return updated
+
+
+@api.get("/admin/growtopia-items")
+async def list_admin_growtopia_items(_=Depends(require_admin)):
+    return await db.growtopia_items.find({}, {"_id": 0}).sort("market_value_bgl", -1).to_list(500)
 
 
 # ---- Battles ----
@@ -774,6 +928,12 @@ async def list_battles(status: Optional[str] = None):
 async def create_battle(req: BattleCreateReq, user=Depends(get_current_user)):
     if req.mode not in ("normal", "jackpot"):
         raise HTTPException(400, "Invalid mode")
+    if req.player_slots < 2 or req.player_slots > 4:
+        raise HTTPException(400, "player_slots must be between 2 and 4")
+    if req.add_bots and (req.bot_count < 1 or req.bot_count > 6):
+        raise HTTPException(400, "bot_count must be between 1 and 6")
+    if not req.add_bots and req.bot_count != 0:
+        raise HTTPException(400, "bot_count must be 0 when add_bots is false")
     if not req.selected_cases:
         raise HTTPException(400, "selected_cases must contain at least one case")
     for case_id in req.selected_cases:
@@ -781,11 +941,14 @@ async def create_battle(req: BattleCreateReq, user=Depends(get_current_user)):
     now = now_iso()
     battle_doc = {
         "id": str(uuid.uuid4()),
-        "players": [{"user_id": user["id"], "username": user["username"]}],
+        "players": [{"user_id": user["id"], "username": user["username"], "avatar": user.get("avatar"), "is_bot": False}],
         "selected_cases": req.selected_cases,
         "current_round": 0,
         "battle_status": "waiting",
         "mode": req.mode,
+        "player_slots": req.player_slots,
+        "add_bots": req.add_bots,
+        "bot_count": req.bot_count,
         "round_results": [],
         "totals_by_player": {user["id"]: 0.0},
         "winner_user_id": None,
@@ -800,10 +963,19 @@ async def create_battle(req: BattleCreateReq, user=Depends(get_current_user)):
     log_doc = await create_battle_log(
         battle_doc["id"],
         "BattleCreated",
-        {"players": battle_doc["players"], "selected_cases": battle_doc["selected_cases"], "mode": battle_doc["mode"]},
+        {
+            "players": battle_doc["players"],
+            "selected_cases": battle_doc["selected_cases"],
+            "mode": battle_doc["mode"],
+            "player_slots": battle_doc["player_slots"],
+            "add_bots": battle_doc["add_bots"],
+            "bot_count": battle_doc["bot_count"],
+        },
         actor_user_id=user["id"],
     )
     await battle_ws_broadcast(battle_doc["id"], {"type": log_doc["event_type"], "log": log_doc})
+    if req.add_bots and req.bot_count > 0:
+        asyncio.create_task(schedule_battle_bot_fill(battle_doc["id"], 30))
     return battle_doc
 
 
@@ -832,10 +1004,11 @@ async def join_battle(battle_id: str, user=Depends(get_current_user)):
     players = battle_doc.get("players", [])
     if any(p["user_id"] == user["id"] for p in players):
         return battle_doc
-    if len(players) >= 4:
+    max_players = int(battle_doc.get("player_slots", 4))
+    if len(players) >= max_players:
         raise HTTPException(400, "Battle is full")
 
-    players.append({"user_id": user["id"], "username": user["username"]})
+    players.append({"user_id": user["id"], "username": user["username"], "avatar": user.get("avatar"), "is_bot": False})
     totals = dict(battle_doc.get("totals_by_player", {}))
     totals[user["id"]] = 0.0
     await db.battles.update_one(
@@ -847,7 +1020,7 @@ async def join_battle(battle_id: str, user=Depends(get_current_user)):
     log_doc = await create_battle_log(
         battle_id,
         "PlayerJoined",
-        {"user_id": user["id"], "username": user["username"], "player_count": len(players)},
+        {"user_id": user["id"], "username": user["username"], "player_count": len(players), "is_bot": False},
         actor_user_id=user["id"],
     )
     await battle_ws_broadcast(battle_id, {"type": log_doc["event_type"], "log": log_doc})
@@ -863,8 +1036,9 @@ async def start_battle(battle_id: str, user=Depends(get_current_user)):
         raise HTTPException(400, "Battle already started")
     if not any(p["user_id"] == user["id"] for p in battle_doc.get("players", [])):
         raise HTTPException(403, "Only participants can start this battle")
-    if len(battle_doc.get("players", [])) < 2:
-        raise HTTPException(400, "Need at least 2 players to start")
+    player_slots = int(battle_doc.get("player_slots", 2))
+    if len(battle_doc.get("players", [])) < max(2, player_slots):
+        raise HTTPException(400, "Battle must be full before it can start")
 
     await db.battles.update_one(
         {"id": battle_id},
@@ -914,8 +1088,11 @@ async def play_next_round(battle_id: str, user=Depends(get_current_user)):
             {
                 "user_id": player["user_id"],
                 "username": player["username"],
+                "avatar": player.get("avatar"),
+                "is_bot": bool(player.get("is_bot")),
                 "item_id": opened["item"]["id"],
                 "item_name": opened["item"]["name"],
+                "item_icon_url": opened["item"].get("icon_url"),
                 "item_value": opened["item"]["value"],
                 "open_id": opened["id"],
             }
@@ -967,6 +1144,7 @@ async def play_next_round(battle_id: str, user=Depends(get_current_user)):
             {
                 "winner_user_id": winner["user_id"],
                 "winner_username": winner["username"],
+                "winner_is_bot": bool(winner.get("is_bot")),
                 "mode": battle_doc.get("mode"),
                 "totals": totals,
             },
@@ -1133,6 +1311,15 @@ logger = logging.getLogger(__name__)
 async def startup_indexes():
     await db.battle_logs.create_index([("battle_id", 1), ("created_at", 1)])
     await db.battles.create_index([("battle_status", 1), ("created_at", -1)])
+    await db.growtopia_items.create_index([("id", 1)], unique=True)
+    await db.growtopia_items.create_index([("name", 1)])
+    await db.cases.create_index([("is_active", 1), ("created_at", -1)])
+    for seed_item in DEFAULT_GROWTOPIA_ITEMS:
+        await db.growtopia_items.update_one(
+            {"id": seed_item["id"]},
+            {"$setOnInsert": {**seed_item, "created_at": now_iso(), "updated_at": now_iso()}},
+            upsert=True,
+        )
 
 
 @app.on_event("shutdown")
