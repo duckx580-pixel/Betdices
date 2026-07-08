@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ShieldCheck, CheckCircle2, XCircle, Loader2, Users, Wallet, DollarSign, Gamepad2 } from "lucide-react";
 import { adminApi, casesApi } from "../lib/api";
@@ -23,7 +23,7 @@ export default function Admin() {
         adminApi.growtopiaItems(),
         casesApi.list(false),
       ]);
-      setStats(s); setDeposits(d); setWithdraws(w); setGrowtopiaItems(gtItems || []); setAllCases(caseList || []);
+      setStats(s); setDeposits(d); setWithdraws(w); setGrowtopiaItems(gtItems?.items || gtItems || []); setAllCases(caseList || []);
     } catch (e) {
       toast.error("Failed to load admin data");
     }
@@ -239,8 +239,41 @@ function CaseCreatorPanel({ growtopiaItems, allCases, onCreated }) {
   const [name, setName] = useState("");
   const [image, setImage] = useState("");
   const [priceBgl, setPriceBgl] = useState("1");
+  const [isActive, setIsActive] = useState(true);
   const [selectedItems, setSelectedItems] = useState([]);
+  const [editingCaseId, setEditingCaseId] = useState("");
+  const [itemSearch, setItemSearch] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const filteredGrowtopiaItems = useMemo(() => {
+    const keyword = itemSearch.trim().toLowerCase();
+    if (!keyword) return growtopiaItems;
+    return growtopiaItems.filter((item) => item.name?.toLowerCase().includes(keyword));
+  }, [growtopiaItems, itemSearch]);
+
+  const resetForm = () => {
+    setEditingCaseId("");
+    setName("");
+    setImage("");
+    setPriceBgl("1");
+    setIsActive(true);
+    setSelectedItems([]);
+  };
+
+  const startEditCase = (caseItem) => {
+    setEditingCaseId(caseItem.id);
+    setName(caseItem.name || "");
+    setImage(caseItem.image || "");
+    setPriceBgl(String(Number(caseItem.price_bgl || 1)));
+    setIsActive(Boolean(caseItem.is_active));
+    setSelectedItems(
+      (caseItem.items || []).map((item) => ({
+        growtopia_item_id: item.growtopia_item_id,
+        probability_percentage: String(Number(item.probability_percentage || 0)),
+      }))
+    );
+  };
 
   const addItem = (itemId) => {
     if (!itemId || selectedItems.some((entry) => entry.growtopia_item_id === itemId)) return;
@@ -262,6 +295,10 @@ function CaseCreatorPanel({ growtopiaItems, allCases, onCreated }) {
   };
 
   const totalProbability = selectedItems.reduce((sum, entry) => sum + Number(entry.probability_percentage || 0), 0);
+  const totalPreviewValue = selectedItems.reduce((sum, entry) => {
+    const item = growtopiaItems.find((gt) => gt.id === entry.growtopia_item_id);
+    return sum + Number(item?.market_value_bgl || 0);
+  }, 0);
 
   const submitCase = async () => {
     if (!name.trim()) return toast.error("Case name is required");
@@ -271,41 +308,91 @@ function CaseCreatorPanel({ growtopiaItems, allCases, onCreated }) {
 
     setSubmitting(true);
     try {
-      await adminApi.createCase({
+      const payload = {
         name: name.trim(),
         image: image.trim() || null,
         price_bgl: Number(priceBgl),
+        is_active: isActive,
         items: selectedItems.map((entry) => ({
           growtopia_item_id: entry.growtopia_item_id,
           probability_percentage: Number(entry.probability_percentage),
         })),
-      });
-      toast.success("Case created");
-      setName("");
-      setImage("");
-      setPriceBgl("1");
-      setSelectedItems([]);
+      };
+      if (editingCaseId) {
+        await adminApi.updateCase(editingCaseId, payload);
+        toast.success("Case updated");
+      } else {
+        await adminApi.createCase(payload);
+        toast.success("Case created");
+      }
+      resetForm();
       await onCreated();
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Failed to create case");
+      toast.error(e.response?.data?.detail || "Failed to save case");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const toggleCaseStatus = async (caseItem) => {
+    try {
+      await adminApi.setCaseStatus(caseItem.id, !caseItem.is_active);
+      toast.success(`${caseItem.name} is now ${!caseItem.is_active ? "active" : "inactive"}`);
+      await onCreated();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to update case status");
+    }
+  };
+
+  const importItems = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const res = await adminApi.importGrowtopiaItems(file);
+      toast.success(`Imported ${res.imported_count} items (${res.rejected_count} rejected)`);
+      await onCreated();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Failed to import items");
+    } finally {
+      setUploading(false);
+      event.target.value = "";
     }
   };
 
   return (
     <div className="space-y-4">
       <div className="bg-[#131c2f] border border-white/5 rounded-2xl p-4 space-y-3">
-        <h3 className="font-bold">Create New Case</h3>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <h3 className="font-bold">{editingCaseId ? "Edit Case" : "Create New Case"}</h3>
+          {editingCaseId ? (
+            <button onClick={resetForm} className="text-xs text-slate-300 hover:text-white">Cancel edit</button>
+          ) : null}
+        </div>
         <div className="grid md:grid-cols-3 gap-3">
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Case Name" className="bg-[#0e1628] border border-white/10 rounded-lg px-3 h-10 text-sm" />
           <input value={priceBgl} onChange={(e) => setPriceBgl(e.target.value)} placeholder="Case Price (BGL)" type="number" step="0.01" min="0" max="400" className="bg-[#0e1628] border border-white/10 rounded-lg px-3 h-10 text-sm" />
           <input value={image} onChange={(e) => setImage(e.target.value)} placeholder="Case Image URL (optional)" className="bg-[#0e1628] border border-white/10 rounded-lg px-3 h-10 text-sm" />
         </div>
+        <div className="flex items-center gap-2 text-sm text-slate-300">
+          <input id="is-case-active" type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} className="accent-[#3583ff]" />
+          <label htmlFor="is-case-active">Case is active</label>
+        </div>
+        <div className="rounded-xl border border-white/10 bg-[#0e1628] p-3 space-y-2">
+          <p className="text-xs text-slate-400">Bulk import Growtopia items (.json/.csv)</p>
+          <input type="file" accept=".json,.csv" onChange={importItems} disabled={uploading} className="text-xs text-slate-300" />
+          <p className="text-[11px] text-slate-500">Required fields: id (optional), name, market_value_bgl, icon_url.</p>
+        </div>
+        <input
+          value={itemSearch}
+          onChange={(e) => setItemSearch(e.target.value)}
+          placeholder="Search Growtopia items..."
+          className="bg-[#0e1628] border border-white/10 rounded-lg px-3 h-10 text-sm w-full"
+        />
         <div className="flex items-center gap-3 flex-wrap">
           <select onChange={(e) => addItem(e.target.value)} value="" className="bg-[#0e1628] border border-white/10 rounded-lg px-3 h-10 text-sm">
             <option value="">Add Growtopia item...</option>
-            {growtopiaItems.map((item) => (
+            {filteredGrowtopiaItems.slice(0, 200).map((item) => (
               <option key={item.id} value={item.id}>
                 {item.name} ({Number(item.market_value_bgl || 0).toFixed(2)} BGL)
               </option>
@@ -315,8 +402,11 @@ function CaseCreatorPanel({ growtopiaItems, allCases, onCreated }) {
             Total probability: {totalProbability.toFixed(4)}%
           </div>
           <button onClick={submitCase} disabled={submitting} className="ml-auto h-10 px-4 rounded-lg bg-[#3583ff] font-semibold disabled:opacity-50">
-            {submitting ? "Creating..." : "Create Case"}
+            {submitting ? "Saving..." : editingCaseId ? "Save Case" : "Create Case"}
           </button>
+        </div>
+        <div className="text-xs text-slate-400">
+          Preview: {selectedItems.length} items • Combined item value {totalPreviewValue.toFixed(2)} BGL
         </div>
         <div className="space-y-2">
           {selectedItems.map((entry) => {
@@ -358,7 +448,13 @@ function CaseCreatorPanel({ growtopiaItems, allCases, onCreated }) {
                   <p className="font-semibold">{caseItem.name}</p>
                   <p className="text-xs text-slate-400">{(caseItem.items || []).length} items • {Number(caseItem.price_bgl || 0).toFixed(2)} BGL</p>
                 </div>
-                <span className={`text-xs font-semibold ${caseItem.is_active ? "text-emerald-400" : "text-slate-400"}`}>{caseItem.is_active ? "ACTIVE" : "INACTIVE"}</span>
+                <div className="flex items-center gap-3">
+                  <button onClick={() => startEditCase(caseItem)} className="text-xs text-[#7cb0ff] hover:text-[#95beff]">Edit</button>
+                  <button onClick={() => toggleCaseStatus(caseItem)} className="text-xs text-amber-300 hover:text-amber-200">
+                    {caseItem.is_active ? "Deactivate" : "Activate"}
+                  </button>
+                  <span className={`text-xs font-semibold ${caseItem.is_active ? "text-emerald-400" : "text-slate-400"}`}>{caseItem.is_active ? "ACTIVE" : "INACTIVE"}</span>
+                </div>
               </div>
             ))}
           </div>

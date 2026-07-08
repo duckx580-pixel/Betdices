@@ -89,9 +89,15 @@ export const adminApi = {
   decideWithdraw: (id, status, admin_note) =>
     api.post(`/admin/withdraws/${id}/decide`, { status, admin_note }).then((r) => r.data),
   stats: () => api.get("/admin/stats").then((r) => r.data),
-  growtopiaItems: () => api.get("/admin/growtopia-items").then((r) => r.data),
+  growtopiaItems: (params = {}) => api.get("/admin/growtopia-items", { params }).then((r) => r.data),
+  importGrowtopiaItems: (file) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return api.post("/admin/growtopia-items/import", formData).then((r) => r.data);
+  },
   createCase: (payload) => api.post("/admin/cases", payload).then((r) => r.data),
   updateCase: (caseId, payload) => api.put(`/admin/cases/${caseId}`, payload).then((r) => r.data),
+  setCaseStatus: (caseId, is_active) => api.patch(`/admin/cases/${caseId}/status`, { is_active }).then((r) => r.data),
 };
 
 export const chatApi = {
@@ -104,6 +110,7 @@ export const casesApi = {
   get: (id) => api.get(`/cases/${id}`).then((r) => r.data),
   open: (id) => api.post(`/cases/${id}/open`).then((r) => r.data),
   myOpens: () => api.get("/cases/me/opens").then((r) => r.data),
+  growtopiaItems: (params = {}) => api.get("/growtopia-items", { params }).then((r) => r.data),
 };
 
 export const battlesApi = {

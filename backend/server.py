@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends, WebSocket, WebSocketDisconnect, UploadFile, File
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -10,12 +10,17 @@ import uvicorn
 import secrets
 import asyncio
 import random
+import csv
+import io
+import json
+import re
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Set
 from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pymongo import UpdateOne
 
 
 ROOT_DIR = Path(__file__).parent
@@ -201,18 +206,12 @@ class BattleCreateReq(BaseModel):
     bot_count: int = 0
 
 
-battle_connections: Dict[str, Set[WebSocket]] = {}
+class CaseStatusReq(BaseModel):
+    is_active: bool
 
-DEFAULT_GROWTOPIA_ITEMS = [
-    {"id": "rayman-fist", "name": "Rayman's Fist", "icon_url": "https://cdn.discordapp.com/emojis/1181482977732458578.webp", "market_value_bgl": 355.0},
-    {"id": "ghc", "name": "Golden Heart Crystal", "icon_url": "https://cdn.discordapp.com/emojis/1181483008904509491.webp", "market_value_bgl": 280.0},
-    {"id": "magplant", "name": "Magplant 5000", "icon_url": "https://cdn.discordapp.com/emojis/1181482994073462844.webp", "market_value_bgl": 249.0},
-    {"id": "gaia-beacon", "name": "Gaia's Beacon", "icon_url": "https://cdn.discordapp.com/emojis/1181483023798482974.webp", "market_value_bgl": 198.0},
-    {"id": "dreamcatcher", "name": "Dreamcatcher Staff", "icon_url": "https://cdn.discordapp.com/emojis/1181482960913305671.webp", "market_value_bgl": 155.0},
-    {"id": "lgrid", "name": "Legendary Dragon", "icon_url": "https://cdn.discordapp.com/emojis/1181482947487340604.webp", "market_value_bgl": 140.0},
-    {"id": "diamond-lock", "name": "Diamond Lock", "icon_url": "https://cdn.discordapp.com/emojis/1181482934019432600.webp", "market_value_bgl": 1.0},
-    {"id": "gold-lock", "name": "Gold Lock", "icon_url": "https://cdn.discordapp.com/emojis/1181482916038465646.webp", "market_value_bgl": 0.01},
-]
+
+battle_connections: Dict[str, Set[WebSocket]] = {}
+GROWTOPIA_SEED_PATH = ROOT_DIR / "data" / "growtopia_items_seed.json"
 
 BOT_NAME_POOL = [
     "VoidRusher",
@@ -224,6 +223,96 @@ BOT_NAME_POOL = [
     "AstraWrench",
     "FrostCrate",
 ]
+
+
+def slugify_item_id(value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower()).strip("-")
+    return cleaned
+
+
+def normalize_growtopia_import_row(raw: Dict[str, Any], row_number: int) -> Dict[str, Any]:
+    item_name = str(raw.get("name", "")).strip()
+    if not item_name:
+        raise ValueError("name is required")
+    item_id = slugify_item_id(str(raw.get("id") or item_name))
+    if not item_id:
+        raise ValueError("id is required")
+    market_value_bgl_raw = raw.get("market_value_bgl")
+    if market_value_bgl_raw is None or str(market_value_bgl_raw).strip() == "":
+        raise ValueError("market_value_bgl is required")
+    try:
+        market_value_bgl = round(float(market_value_bgl_raw), 4)
+    except (TypeError, ValueError):
+        raise ValueError("market_value_bgl must be numeric")
+    if market_value_bgl < 0:
+        raise ValueError("market_value_bgl must be >= 0")
+    icon_url = str(raw.get("icon_url", "")).strip()
+    if not icon_url:
+        raise ValueError("icon_url is required")
+    if not re.match(r"^https?://", icon_url, re.IGNORECASE):
+        raise ValueError("icon_url must be an absolute http(s) URL")
+    return {
+        "id": item_id,
+        "name": item_name,
+        "market_value_bgl": market_value_bgl,
+        "icon_url": icon_url,
+        "row_number": row_number,
+    }
+
+
+def parse_growtopia_import_file(filename: str, raw_bytes: bytes) -> Dict[str, Any]:
+    ext = Path(filename or "").suffix.lower()
+    if ext not in (".json", ".csv"):
+        raise HTTPException(400, "Only .json and .csv files are supported")
+
+    try:
+        text = raw_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(400, "File must be UTF-8 encoded")
+
+    rows: List[Dict[str, Any]] = []
+    if ext == ".json":
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "Invalid JSON format")
+        if not isinstance(payload, list):
+            raise HTTPException(400, "JSON must be an array of item objects")
+        rows = payload
+    else:
+        reader = csv.DictReader(io.StringIO(text))
+        if not reader.fieldnames:
+            raise HTTPException(400, "CSV header is required")
+        rows = [row for row in reader]
+
+    normalized: List[Dict[str, Any]] = []
+    rejected: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+
+    for idx, row in enumerate(rows, start=1):
+        try:
+            clean = normalize_growtopia_import_row(row or {}, idx)
+            if clean["id"] in seen_ids:
+                raise ValueError(f"duplicate id '{clean['id']}' in uploaded file")
+            seen_ids.add(clean["id"])
+            normalized.append(clean)
+        except ValueError as err:
+            rejected.append({"row": idx, "error": str(err), "data": row})
+
+    return {"items": normalized, "rejected": rejected, "total_rows": len(rows)}
+
+
+def load_default_growtopia_items() -> List[Dict[str, Any]]:
+    if not GROWTOPIA_SEED_PATH.exists():
+        logger.warning("Growtopia seed file not found at %s", GROWTOPIA_SEED_PATH)
+        return []
+    try:
+        raw = GROWTOPIA_SEED_PATH.read_bytes()
+        parsed = parse_growtopia_import_file(GROWTOPIA_SEED_PATH.name, raw)
+        return parsed["items"]
+    except Exception:
+        logger.exception("Failed to load Growtopia seed items")
+        return []
 
 
 def probability_to_points(probability_percentage: float) -> int:
@@ -328,6 +417,43 @@ async def battle_ws_broadcast(battle_id: str, payload: Dict[str, Any]):
         battle_ws_disconnect(battle_id, socket)
 
 
+def build_battle_snapshot(battle_doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not battle_doc:
+        return None
+    return {
+        "id": battle_doc.get("id"),
+        "players": battle_doc.get("players", []),
+        "selected_cases": battle_doc.get("selected_cases", []),
+        "current_round": battle_doc.get("current_round", 0),
+        "battle_status": battle_doc.get("battle_status"),
+        "mode": battle_doc.get("mode"),
+        "player_slots": battle_doc.get("player_slots", 2),
+        "add_bots": battle_doc.get("add_bots", False),
+        "bot_count": battle_doc.get("bot_count", 0),
+        "round_results": battle_doc.get("round_results", []),
+        "totals_by_player": battle_doc.get("totals_by_player", {}),
+        "winner_user_id": battle_doc.get("winner_user_id"),
+        "winner_meta": battle_doc.get("winner_meta"),
+        "updated_at": battle_doc.get("updated_at"),
+    }
+
+
+async def broadcast_battle_log_event(battle_id: str, log_doc: Dict[str, Any], battle_doc: Optional[Dict[str, Any]] = None):
+    battle_snapshot = build_battle_snapshot(battle_doc)
+    if battle_snapshot is None:
+        existing = await db.battles.find_one({"id": battle_id}, {"_id": 0})
+        battle_snapshot = build_battle_snapshot(existing)
+    await battle_ws_broadcast(
+        battle_id,
+        {
+            "type": "BattleEvent",
+            "event_type": log_doc["event_type"],
+            "log": log_doc,
+            "battle": battle_snapshot,
+        },
+    )
+
+
 def make_bot_player_profile() -> Dict[str, Any]:
     alias = random.choice(BOT_NAME_POOL)
     suffix = f"{random.randint(1000, 9999)}"
@@ -379,6 +505,7 @@ async def fill_battle_with_bots(battle_id: str):
         return
 
     totals = dict(battle_doc.get("totals_by_player", {}))
+    created_logs: List[Dict[str, Any]] = []
     for _ in range(bots_to_add):
         bot_user = await ensure_bot_user()
         player_data = {
@@ -400,15 +527,18 @@ async def fill_battle_with_bots(battle_id: str):
             },
             actor_user_id=bot_user["id"],
         )
-        await battle_ws_broadcast(battle_id, {"type": log_doc["event_type"], "log": log_doc})
+        created_logs.append(log_doc)
 
     await db.battles.update_one(
         {"id": battle_id},
         {"$set": {"players": players, "totals_by_player": totals, "updated_at": now_iso()}},
     )
+    updated_battle = await db.battles.find_one({"id": battle_id}, {"_id": 0})
+    for log_doc in created_logs:
+        await broadcast_battle_log_event(battle_id, log_doc, updated_battle)
 
 
-async def schedule_battle_bot_fill(battle_id: str, delay_seconds: int = 30):
+async def schedule_battle_bot_fill(battle_id: str, delay_seconds: int = 5):
     await asyncio.sleep(delay_seconds)
     try:
         await fill_battle_with_bots(battle_id)
@@ -832,8 +962,19 @@ async def game_history(user=Depends(get_current_user)):
 
 # ---- Cases ----
 @api.get("/growtopia-items")
-async def list_growtopia_items():
-    return await db.growtopia_items.find({}, {"_id": 0}).sort("market_value_bgl", -1).to_list(500)
+async def list_growtopia_items(
+    q: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    query: Dict[str, Any] = {}
+    if q and q.strip():
+        query["name"] = {"$regex": re.escape(q.strip()), "$options": "i"}
+    total = await db.growtopia_items.count_documents(query)
+    items = await db.growtopia_items.find(query, {"_id": 0}).sort("name", 1).skip(offset).limit(limit).to_list(limit)
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @api.get("/cases")
@@ -909,9 +1050,69 @@ async def update_case(case_id: str, req: CaseUpsertReq, _=Depends(require_admin)
     return updated
 
 
+@api.patch("/admin/cases/{case_id}/status")
+async def set_case_status(case_id: str, req: CaseStatusReq, _=Depends(require_admin)):
+    await ensure_case_exists(case_id)
+    await db.cases.update_one(
+        {"id": case_id},
+        {"$set": {"is_active": bool(req.is_active), "updated_at": now_iso()}},
+    )
+    updated = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    return updated
+
+
 @api.get("/admin/growtopia-items")
-async def list_admin_growtopia_items(_=Depends(require_admin)):
-    return await db.growtopia_items.find({}, {"_id": 0}).sort("market_value_bgl", -1).to_list(500)
+async def list_admin_growtopia_items(
+    q: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    _=Depends(require_admin),
+):
+    return await list_growtopia_items(q=q, limit=limit, offset=offset)
+
+
+@api.post("/admin/growtopia-items/import")
+async def import_admin_growtopia_items(file: UploadFile = File(...), _=Depends(require_admin)):
+    filename = file.filename or ""
+    content = await file.read()
+    parsed = parse_growtopia_import_file(filename, content)
+    items: List[Dict[str, Any]] = parsed["items"]
+    rejected: List[Dict[str, Any]] = parsed["rejected"]
+
+    existing_ids = []
+    if items:
+        existing_docs = await db.growtopia_items.find({"id": {"$in": [item["id"] for item in items]}}, {"_id": 0, "id": 1}).to_list(len(items))
+        existing_ids = [doc["id"] for doc in existing_docs]
+
+    now = now_iso()
+    operations = [
+        UpdateOne(
+            {"id": item["id"]},
+            {
+                "$set": {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "market_value_bgl": item["market_value_bgl"],
+                    "icon_url": item["icon_url"],
+                    "updated_at": now,
+                },
+                "$setOnInsert": {"created_at": now},
+            },
+            upsert=True,
+        )
+        for item in items
+    ]
+    if operations:
+        await db.growtopia_items.bulk_write(operations, ordered=False)
+
+    return {
+        "total_rows": parsed["total_rows"],
+        "imported_count": len(items),
+        "created_count": len([item for item in items if item["id"] not in existing_ids]),
+        "updated_count": len([item for item in items if item["id"] in existing_ids]),
+        "rejected_count": len(rejected),
+        "rejected": rejected[:200],
+    }
 
 
 # ---- Battles ----
@@ -934,6 +1135,9 @@ async def create_battle(req: BattleCreateReq, user=Depends(get_current_user)):
         raise HTTPException(400, "bot_count must be between 1 and 6")
     if not req.add_bots and req.bot_count != 0:
         raise HTTPException(400, "bot_count must be 0 when add_bots is false")
+    max_bot_slots = req.player_slots - 1
+    if req.add_bots and req.bot_count > max_bot_slots:
+        raise HTTPException(400, f"bot_count cannot exceed available slots ({max_bot_slots})")
     if not req.selected_cases:
         raise HTTPException(400, "selected_cases must contain at least one case")
     for case_id in req.selected_cases:
@@ -973,9 +1177,9 @@ async def create_battle(req: BattleCreateReq, user=Depends(get_current_user)):
         },
         actor_user_id=user["id"],
     )
-    await battle_ws_broadcast(battle_doc["id"], {"type": log_doc["event_type"], "log": log_doc})
+    await broadcast_battle_log_event(battle_doc["id"], log_doc, battle_doc)
     if req.add_bots and req.bot_count > 0:
-        asyncio.create_task(schedule_battle_bot_fill(battle_doc["id"], 30))
+        asyncio.create_task(schedule_battle_bot_fill(battle_doc["id"], 5))
     return battle_doc
 
 
@@ -1023,7 +1227,9 @@ async def join_battle(battle_id: str, user=Depends(get_current_user)):
         {"user_id": user["id"], "username": user["username"], "player_count": len(players), "is_bot": False},
         actor_user_id=user["id"],
     )
-    await battle_ws_broadcast(battle_id, {"type": log_doc["event_type"], "log": log_doc})
+    await broadcast_battle_log_event(battle_id, log_doc, updated)
+    if updated.get("add_bots") and int(updated.get("bot_count", 0)) > 0 and updated.get("battle_status") == "waiting":
+        asyncio.create_task(schedule_battle_bot_fill(battle_id, 2))
     return updated
 
 
@@ -1051,7 +1257,7 @@ async def start_battle(battle_id: str, user=Depends(get_current_user)):
         {"player_count": len(updated.get("players", []))},
         actor_user_id=user["id"],
     )
-    await battle_ws_broadcast(battle_id, {"type": log_doc["event_type"], "log": log_doc})
+    await broadcast_battle_log_event(battle_id, log_doc, updated)
     return updated
 
 
@@ -1116,7 +1322,7 @@ async def play_next_round(battle_id: str, user=Depends(get_current_user)):
         actor_user_id=user["id"],
         round_number=current_round + 1,
     )
-    await battle_ws_broadcast(battle_id, {"type": round_log["event_type"], "log": round_log})
+    await broadcast_battle_log_event(battle_id, round_log, battle_doc)
 
     if battle_doc["current_round"] >= len(selected_cases):
         players = battle_doc.get("players", [])
@@ -1150,7 +1356,7 @@ async def play_next_round(battle_id: str, user=Depends(get_current_user)):
             },
             round_number=battle_doc["current_round"],
         )
-        await battle_ws_broadcast(battle_id, {"type": winner_log["event_type"], "log": winner_log})
+        await broadcast_battle_log_event(battle_id, winner_log, battle_doc)
 
     battle_doc["updated_at"] = now_iso()
     await db.battles.update_one(
@@ -1314,10 +1520,19 @@ async def startup_indexes():
     await db.growtopia_items.create_index([("id", 1)], unique=True)
     await db.growtopia_items.create_index([("name", 1)])
     await db.cases.create_index([("is_active", 1), ("created_at", -1)])
-    for seed_item in DEFAULT_GROWTOPIA_ITEMS:
+    for seed_item in load_default_growtopia_items():
         await db.growtopia_items.update_one(
             {"id": seed_item["id"]},
-            {"$setOnInsert": {**seed_item, "created_at": now_iso(), "updated_at": now_iso()}},
+            {
+                "$setOnInsert": {
+                    "id": seed_item["id"],
+                    "name": seed_item["name"],
+                    "icon_url": seed_item["icon_url"],
+                    "market_value_bgl": round(float(seed_item["market_value_bgl"]), 4),
+                    "created_at": now_iso(),
+                    "updated_at": now_iso(),
+                }
+            },
             upsert=True,
         )
 

@@ -123,7 +123,7 @@ export default function Battles() {
                 <option value="5">5</option>
                 <option value="6">6</option>
               </select>
-              <p className="text-xs text-slate-400">Unfilled slots are auto-filled by bots after 30 seconds.</p>
+              <p className="text-xs text-slate-400">Unfilled slots are auto-filled by bots automatically after a short delay.</p>
             </>
           ) : null}
           <button onClick={createBattle} className="ml-auto h-9 px-4 rounded-lg bg-[#3583ff] font-semibold">

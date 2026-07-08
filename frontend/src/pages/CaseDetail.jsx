@@ -3,6 +3,12 @@ import { useParams } from "react-router-dom";
 import { casesApi, logApiError } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
+function ItemIcon({ src, alt, className }) {
+  const [broken, setBroken] = useState(false);
+  if (!src || broken) return <div className="w-11 h-11 rounded-md bg-slate-800" />;
+  return <img src={src} alt={alt} className={className} onError={() => setBroken(true)} />;
+}
+
 export default function CaseDetail() {
   const { caseId } = useParams();
   const { refresh } = useAuth();
@@ -70,6 +76,9 @@ export default function CaseDetail() {
       {openResult?.open ? (
         <div className="rounded-2xl bg-[#10222d] border border-emerald-500/25 p-4">
           <p className="text-xs uppercase tracking-wider text-emerald-300">Latest result</p>
+          {openResult.open.item.icon_url ? (
+            <img src={openResult.open.item.icon_url} alt={openResult.open.item.name} className="w-14 h-14 rounded-lg object-cover bg-black/40 mt-2" />
+          ) : null}
           <p className="font-bold mt-1">{openResult.open.item.name}</p>
           <p className="text-slate-300 text-sm">Value: {Number(openResult.open.item.market_value_bgl || openResult.open.item.value || 0).toFixed(2)} BGL</p>
           <p className="text-slate-300 text-sm">Odds: {Number(openResult.open.item.probability_percentage || 0).toFixed(4)}%</p>
@@ -82,7 +91,7 @@ export default function CaseDetail() {
           {displayedItems.map((item) => (
             <div key={item.id} className="flex items-center gap-3 rounded-xl border border-white/10 bg-[#0f1728] px-3 py-2">
               {item.icon_url ? (
-                <img src={item.icon_url} alt={item.name} className="w-11 h-11 rounded-md object-cover bg-black/40" />
+                <ItemIcon src={item.icon_url} alt={item.name} className="w-11 h-11 rounded-md object-cover bg-black/40" />
               ) : (
                 <div className="w-11 h-11 rounded-md bg-slate-800" />
               )}
