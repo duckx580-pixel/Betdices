@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate, Navigate, Link } from "react-router-dom";
 import { Dice5, ArrowRight, ShieldCheck, Zap, Trophy } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -11,6 +11,12 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!process.env.REACT_APP_BACKEND_URL) {
+      console.error("[BetDice Login] REACT_APP_BACKEND_URL is undefined during build/runtime.");
+    }
+  }, []);
 
   if (loading) return null;
   if (user) return <Navigate to="/" replace />;
