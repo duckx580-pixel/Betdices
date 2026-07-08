@@ -1,18 +1,10 @@
 import axios from "axios";
 
-const normalizeBackendOrigin = (value) => {
-  if (!value || typeof value !== "string") return "";
-  return value
-    .trim()
-    .replace(/\/+$/, "")
-    .replace(/\/api$/i, "");
-};
-
-const BACKEND_URL = normalizeBackendOrigin(process.env.REACT_APP_BACKEND_URL);
+const BACKEND_URL = "https://hammerhead-app-rio26.ondigitalocean.app";
 const TOKEN_KEY = "betdice_token";
-export const API = BACKEND_URL ? `${BACKEND_URL}/api` : "";
+export const API = `${BACKEND_URL}/api`;
 
-export const api = axios.create({ baseURL: API || undefined });
+export const api = axios.create({ baseURL: API });
 
 export const logApiError = (context, err) => {
   const details = {
@@ -30,18 +22,7 @@ export const logApiError = (context, err) => {
   console.error("[BetDice API Error]", details);
 };
 
-if (!BACKEND_URL) {
-  console.error("[BetDice API] REACT_APP_BACKEND_URL is not set. API calls require a full backend URL.");
-}
-
 api.interceptors.request.use((config) => {
-  if (!API) {
-    console.error("[BetDice API] Blocking request because REACT_APP_BACKEND_URL is undefined.", {
-      requestedUrl: config?.url,
-    });
-    return Promise.reject(new Error("Missing REACT_APP_BACKEND_URL"));
-  }
-
   if (typeof config.url === "string" && !/^https?:\/\//i.test(config.url)) {
     const relativePath = config.url.startsWith("/") ? config.url : `/${config.url.replace(/^api\/?/i, "")}`;
     config.url = `${API}${relativePath}`;
