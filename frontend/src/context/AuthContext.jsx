@@ -11,6 +11,19 @@ const normalizeBalance = (balance) => ({
   wl: Number(balance?.wl) || 0,
 });
 
+const extractErrorMessage = (value) => {
+  const data = value?.response?.data ?? value?.data ?? value;
+  const candidates = [
+    typeof data === "string" ? data : null,
+    data?.message,
+    data?.detail,
+    data?.msg,
+    data?.error,
+    value?.message,
+  ];
+  return candidates.find((item) => typeof item === "string" && item.trim().length > 0);
+};
+
 const getStoredToken = () => {
   const token = localStorage.getItem(TOKEN_KEY);
   if (!token || token === "undefined" || token === "null") {
@@ -68,35 +81,39 @@ export function AuthProvider({ children }) {
   };
 
   const register = async (growId, password) => {
-    const payload = await authApi.register(growId, password);
-    console.log("Raw Register Response:", payload);
-    const token = payload?.token || payload?.access_token;
-    const u = payload?.user;
-    if (token && u) {
-      saveSession(token, u);
-      setUser(u);
-      return u;
+    try {
+      const payload = await authApi.register(growId, password);
+      console.log("Raw Register Response:", payload);
+      const token = payload?.token || payload?.access_token;
+      const u = payload?.user;
+      if (token && u) {
+        saveSession(token, u);
+        setUser(u);
+        return u;
+      }
+
+      const responseMessage = extractErrorMessage(payload);
+      const indicatesSuccess =
+        payload?.success === true ||
+        payload?.ok === true ||
+        (typeof responseMessage === "string" && /(success|registered|created|ok)/i.test(responseMessage));
+
+      if (indicatesSuccess) {
+        return payload;
+      }
+
+      if (responseMessage) {
+        throw new Error(responseMessage);
+      }
+
+      throw new Error("Invalid register response from server");
+    } catch (error) {
+      const serverMessage = extractErrorMessage(error);
+      if (serverMessage) {
+        throw new Error(serverMessage);
+      }
+      throw error;
     }
-
-    const responseMessage = [
-      payload?.message,
-      payload?.detail,
-      payload?.msg,
-      payload?.data?.message,
-      payload?.data?.detail,
-      payload?.data?.msg,
-    ].find((value) => typeof value === "string" && value.trim().length > 0);
-
-    const indicatesSuccess =
-      payload?.success === true ||
-      payload?.ok === true ||
-      (typeof responseMessage === "string" && /(success|registered|created|ok)/i.test(responseMessage));
-
-    if (indicatesSuccess) {
-      return payload;
-    }
-
-    throw new Error("Invalid register response from server");
   };
 
   const refresh = async () => {
