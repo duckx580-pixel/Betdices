@@ -10,9 +10,9 @@ const normalizeBackendOrigin = (value) => {
 
 const BACKEND_URL = normalizeBackendOrigin(process.env.REACT_APP_BACKEND_URL);
 const TOKEN_KEY = "betdice_token";
-export const API = BACKEND_URL ? `${BACKEND_URL}/api` : "/api";
+export const API = BACKEND_URL ? `${BACKEND_URL}/api` : "";
 
-export const api = axios.create({ baseURL: API });
+export const api = axios.create({ baseURL: API || undefined });
 
 export const logApiError = (context, err) => {
   const details = {
@@ -31,18 +31,21 @@ export const logApiError = (context, err) => {
 };
 
 if (!BACKEND_URL) {
-  console.warn("[BetDice API] REACT_APP_BACKEND_URL is not set. Falling back to relative /api.");
+  console.error("[BetDice API] REACT_APP_BACKEND_URL is not set. API calls require a full backend URL.");
 }
 
 api.interceptors.request.use((config) => {
+  if (!API) {
+    console.error("[BetDice API] Blocking request because REACT_APP_BACKEND_URL is undefined.", {
+      requestedUrl: config?.url,
+    });
+    return Promise.reject(new Error("Missing REACT_APP_BACKEND_URL"));
+  }
+
   if (typeof config.url === "string" && !/^https?:\/\//i.test(config.url)) {
-    if (config.url.startsWith("/")) {
-      config.url = `${API}${config.url}`;
-      config.baseURL = undefined;
-    } else if (!config.url.startsWith("api/")) {
-      config.url = `${API}/${config.url}`;
-      config.baseURL = undefined;
-    }
+    const relativePath = config.url.startsWith("/") ? config.url : `/${config.url.replace(/^api\/?/i, "")}`;
+    config.url = `${API}${relativePath}`;
+    config.baseURL = undefined;
   }
 
   const token = localStorage.getItem(TOKEN_KEY);
