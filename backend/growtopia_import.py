@@ -80,7 +80,7 @@ def parse_growtopia_import_file(filename: str, raw_bytes: bytes) -> Dict[str, An
             seen_ids.add(clean["id"])
             normalized.append(clean)
         except ValueError as err:
-            rejected.append({"row": idx, "error": str(err), "data": row})
+            rejected.append({"row": idx, "error": str(err)})
 
     return {"items": normalized, "rejected": rejected, "total_rows": len(rows)}
 
