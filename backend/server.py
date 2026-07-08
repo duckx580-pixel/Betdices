@@ -7,20 +7,18 @@ import logging
 import uuid
 import jwt
 import uvicorn
-import secrets
 import asyncio
 import random
-import csv
-import io
-import json
 import re
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Set
 from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal
 from pymongo import UpdateOne
+from backend.growtopia_import import parse_growtopia_import_file, load_default_growtopia_items
+from backend.case_battle_utils import probability_to_points, choose_weighted_player, build_battle_snapshot
 
 
 ROOT_DIR = Path(__file__).parent
@@ -225,107 +223,6 @@ BOT_NAME_POOL = [
 ]
 
 
-def slugify_item_id(value: str) -> str:
-    cleaned = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower()).strip("-")
-    return cleaned
-
-
-def normalize_growtopia_import_row(raw: Dict[str, Any], row_number: int) -> Dict[str, Any]:
-    item_name = str(raw.get("name", "")).strip()
-    if not item_name:
-        raise ValueError("name is required")
-    item_id = slugify_item_id(str(raw.get("id") or item_name))
-    if not item_id:
-        raise ValueError("id is required")
-    market_value_bgl_raw = raw.get("market_value_bgl")
-    if market_value_bgl_raw is None or str(market_value_bgl_raw).strip() == "":
-        raise ValueError("market_value_bgl is required")
-    try:
-        market_value_bgl = round(float(market_value_bgl_raw), 4)
-    except (TypeError, ValueError):
-        raise ValueError("market_value_bgl must be numeric")
-    if market_value_bgl < 0:
-        raise ValueError("market_value_bgl must be >= 0")
-    icon_url = str(raw.get("icon_url", "")).strip()
-    if not icon_url:
-        raise ValueError("icon_url is required")
-    if not re.match(r"^https?://", icon_url, re.IGNORECASE):
-        raise ValueError("icon_url must be an absolute http(s) URL")
-    return {
-        "id": item_id,
-        "name": item_name,
-        "market_value_bgl": market_value_bgl,
-        "icon_url": icon_url,
-        "row_number": row_number,
-    }
-
-
-def parse_growtopia_import_file(filename: str, raw_bytes: bytes) -> Dict[str, Any]:
-    ext = Path(filename or "").suffix.lower()
-    if ext not in (".json", ".csv"):
-        raise HTTPException(400, "Only .json and .csv files are supported")
-
-    try:
-        text = raw_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise HTTPException(400, "File must be UTF-8 encoded")
-
-    rows: List[Dict[str, Any]] = []
-    if ext == ".json":
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            raise HTTPException(400, "Invalid JSON format")
-        if not isinstance(payload, list):
-            raise HTTPException(400, "JSON must be an array of item objects")
-        rows = payload
-    else:
-        reader = csv.DictReader(io.StringIO(text))
-        if not reader.fieldnames:
-            raise HTTPException(400, "CSV header is required")
-        rows = [row for row in reader]
-
-    normalized: List[Dict[str, Any]] = []
-    rejected: List[Dict[str, Any]] = []
-    seen_ids: Set[str] = set()
-
-    for idx, row in enumerate(rows, start=1):
-        try:
-            clean = normalize_growtopia_import_row(row or {}, idx)
-            if clean["id"] in seen_ids:
-                raise ValueError(f"duplicate id '{clean['id']}' in uploaded file")
-            seen_ids.add(clean["id"])
-            normalized.append(clean)
-        except ValueError as err:
-            rejected.append({"row": idx, "error": str(err), "data": row})
-
-    return {"items": normalized, "rejected": rejected, "total_rows": len(rows)}
-
-
-def load_default_growtopia_items() -> List[Dict[str, Any]]:
-    if not GROWTOPIA_SEED_PATH.exists():
-        logger.warning("Growtopia seed file not found at %s", GROWTOPIA_SEED_PATH)
-        return []
-    try:
-        raw = GROWTOPIA_SEED_PATH.read_bytes()
-        parsed = parse_growtopia_import_file(GROWTOPIA_SEED_PATH.name, raw)
-        return parsed["items"]
-    except Exception:
-        logger.exception("Failed to load Growtopia seed items")
-        return []
-
-
-def probability_to_points(probability_percentage: float) -> int:
-    try:
-        value = Decimal(str(probability_percentage))
-    except (InvalidOperation, TypeError):
-        raise HTTPException(400, "Invalid probability value")
-    if value <= 0:
-        raise HTTPException(400, "Probability must be > 0")
-    points = (value * Decimal("10000")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    return int(points)
-
-
 async def normalize_case_items(items: List[CaseItemIn]) -> List[Dict[str, Any]]:
     if not items:
         raise HTTPException(400, "Case must contain at least one item")
@@ -415,27 +312,6 @@ async def battle_ws_broadcast(battle_id: str, payload: Dict[str, Any]):
             dead.append(socket)
     for socket in dead:
         battle_ws_disconnect(battle_id, socket)
-
-
-def build_battle_snapshot(battle_doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    if not battle_doc:
-        return None
-    return {
-        "id": battle_doc.get("id"),
-        "players": battle_doc.get("players", []),
-        "selected_cases": battle_doc.get("selected_cases", []),
-        "current_round": battle_doc.get("current_round", 0),
-        "battle_status": battle_doc.get("battle_status"),
-        "mode": battle_doc.get("mode"),
-        "player_slots": battle_doc.get("player_slots", 2),
-        "add_bots": battle_doc.get("add_bots", False),
-        "bot_count": battle_doc.get("bot_count", 0),
-        "round_results": battle_doc.get("round_results", []),
-        "totals_by_player": battle_doc.get("totals_by_player", {}),
-        "winner_user_id": battle_doc.get("winner_user_id"),
-        "winner_meta": battle_doc.get("winner_meta"),
-        "updated_at": battle_doc.get("updated_at"),
-    }
 
 
 async def broadcast_battle_log_event(battle_id: str, log_doc: Dict[str, Any], battle_doc: Optional[Dict[str, Any]] = None):
@@ -544,19 +420,6 @@ async def schedule_battle_bot_fill(battle_id: str, delay_seconds: int = 5):
         await fill_battle_with_bots(battle_id)
     except Exception:
         logger.exception("Failed to auto-fill battle with bots")
-
-
-def choose_weighted_player(weights: List[int]) -> int:
-    total = sum(weights)
-    if total <= 0:
-        return secrets.randbelow(len(weights))
-    roll = secrets.randbelow(total) + 1
-    cumulative = 0
-    for index, weight in enumerate(weights):
-        cumulative += weight
-        if roll <= cumulative:
-            return index
-    return len(weights) - 1
 
 
 async def open_case_service(case_id: str, user_id: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1520,7 +1383,7 @@ async def startup_indexes():
     await db.growtopia_items.create_index([("id", 1)], unique=True)
     await db.growtopia_items.create_index([("name", 1)])
     await db.cases.create_index([("is_active", 1), ("created_at", -1)])
-    for seed_item in load_default_growtopia_items():
+    for seed_item in load_default_growtopia_items(GROWTOPIA_SEED_PATH, logger):
         await db.growtopia_items.update_one(
             {"id": seed_item["id"]},
             {
