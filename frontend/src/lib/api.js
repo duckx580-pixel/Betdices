@@ -3,6 +3,7 @@ import axios from "axios";
 const API_BASE_URL = "https://hammerhead-app-rio26.ondigitalocean.app";
 const TOKEN_KEY = "betdice_token";
 export const API = `${API_BASE_URL}/api`;
+export const WS_BASE = API_BASE_URL.replace(/^http/i, "ws");
 
 export const api = axios.create({ baseURL: API });
 
@@ -93,4 +94,21 @@ export const adminApi = {
 export const chatApi = {
   list: () => api.get("/chat/messages").then((r) => r.data),
   send: (message) => api.post("/chat/messages", { message }).then((r) => r.data),
+};
+
+export const casesApi = {
+  list: (activeOnly = true) => api.get("/cases", { params: { active_only: activeOnly } }).then((r) => r.data),
+  get: (id) => api.get(`/cases/${id}`).then((r) => r.data),
+  open: (id) => api.post(`/cases/${id}/open`).then((r) => r.data),
+  myOpens: () => api.get("/cases/me/opens").then((r) => r.data),
+};
+
+export const battlesApi = {
+  list: (status) => api.get("/battles", { params: status ? { status } : {} }).then((r) => r.data),
+  create: (payload) => api.post("/battles", payload).then((r) => r.data),
+  get: (id) => api.get(`/battles/${id}`).then((r) => r.data),
+  join: (id) => api.post(`/battles/${id}/join`).then((r) => r.data),
+  start: (id) => api.post(`/battles/${id}/start`).then((r) => r.data),
+  nextRound: (id) => api.post(`/battles/${id}/rounds/next`).then((r) => r.data),
+  logs: (id) => api.get(`/battles/${id}/logs`).then((r) => r.data),
 };

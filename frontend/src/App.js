@@ -11,6 +11,10 @@ import GamePlay from "./pages/GamePlay";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Admin from "./pages/Admin";
+import Cases from "./pages/Cases";
+import CaseDetail from "./pages/CaseDetail";
+import Battles from "./pages/Battles";
+import BattleRoom from "./pages/BattleRoom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 
 function PrivateRoute({ children, adminOnly }) {
@@ -46,6 +50,10 @@ function App() {
               <Route path="wallet" element={<Wallet />} />
               <Route path="chat" element={<Chat />} />
               <Route path="game/:gameId" element={<GamePlay />} />
+              <Route path="cases" element={<Cases />} />
+              <Route path="cases/:caseId" element={<CaseDetail />} />
+              <Route path="battles" element={<Battles />} />
+              <Route path="battles/:battleId" element={<BattleRoom />} />
             </Route>
           </Routes>
         </BrowserRouter>

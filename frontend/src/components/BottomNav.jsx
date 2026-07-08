@@ -1,10 +1,12 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
-import { Search, Home, Wallet, MessageCircle } from "lucide-react";
+import { Search, Home, Wallet, MessageCircle, Package, Swords } from "lucide-react";
 
 const items = [
   { to: "/browse", label: "Browse", icon: Search },
   { to: "/", label: "Home", icon: Home, end: true },
+  { to: "/cases", label: "Cases", icon: Package },
+  { to: "/battles", label: "Battles", icon: Swords },
   { to: "/wallet", label: "Wallet", icon: Wallet },
   { to: "/chat", label: "Chat", icon: MessageCircle },
 ];
@@ -12,7 +14,7 @@ const items = [
 export default function BottomNav() {
   return (
     <nav className="fixed bottom-0 inset-x-0 z-40 bg-[#0a0f1e]/95 backdrop-blur-md border-t border-white/5">
-      <div className="max-w-[1200px] mx-auto px-4 grid grid-cols-4 h-20 items-center">
+      <div className="max-w-[1200px] mx-auto px-4 grid grid-cols-6 h-20 items-center">
         {items.map(({ to, label, icon: Icon, end }) => (
           <NavLink
             key={to}
