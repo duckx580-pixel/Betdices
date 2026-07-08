@@ -17,8 +17,14 @@ from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
 from decimal import Decimal
 from pymongo import UpdateOne
-from backend.growtopia_import import parse_growtopia_import_file, load_default_growtopia_items
-from backend.case_battle_utils import probability_to_points, choose_weighted_player, build_battle_snapshot
+try:
+    from backend.growtopia_import import parse_growtopia_import_file, load_default_growtopia_items
+    from backend.case_battle_utils import probability_to_points, choose_weighted_player, build_battle_snapshot
+except ModuleNotFoundError as exc:
+    if exc.name != "backend":
+        raise
+    from growtopia_import import parse_growtopia_import_file, load_default_growtopia_items
+    from case_battle_utils import probability_to_points, choose_weighted_player, build_battle_snapshot
 
 
 ROOT_DIR = Path(__file__).parent
