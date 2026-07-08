@@ -1380,34 +1380,71 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+SEED_BATCH_SIZE = 1000
+growtopia_seed_task: Optional[asyncio.Task] = None
+
+
+async def seed_growtopia_items():
+    try:
+        seed_items = load_default_growtopia_items(GROWTOPIA_SEED_PATH, logger)
+        if not seed_items:
+            return
+        now = now_iso()
+        operations: List[UpdateOne] = []
+        total_upserted = 0
+        for seed_item in seed_items:
+            operations.append(
+                UpdateOne(
+                    {"id": seed_item["id"]},
+                    {
+                        "$set": {
+                            "id": seed_item["id"],
+                            "name": seed_item["name"],
+                            "icon_url": seed_item["icon_url"],
+                            "market_value_bgl": round(float(seed_item["market_value_bgl"]), 4),
+                            "updated_at": now,
+                        },
+                        "$setOnInsert": {"created_at": now},
+                    },
+                    upsert=True,
+                )
+            )
+            if len(operations) >= SEED_BATCH_SIZE:
+                await db.growtopia_items.bulk_write(operations, ordered=False)
+                total_upserted += len(operations)
+                operations.clear()
+        if operations:
+            await db.growtopia_items.bulk_write(operations, ordered=False)
+            total_upserted += len(operations)
+        logger.info("Growtopia seed upsert finished in background: %s items", total_upserted)
+    except Exception:
+        logger.exception("Growtopia seed upsert failed")
 
 
 @app.on_event("startup")
 async def startup_indexes():
+    global growtopia_seed_task
     await db.battle_logs.create_index([("battle_id", 1), ("created_at", 1)])
     await db.battles.create_index([("battle_status", 1), ("created_at", -1)])
     await db.growtopia_items.create_index([("id", 1)], unique=True)
     await db.growtopia_items.create_index([("name", 1)])
     await db.cases.create_index([("is_active", 1), ("created_at", -1)])
-    for seed_item in load_default_growtopia_items(GROWTOPIA_SEED_PATH, logger):
-        await db.growtopia_items.update_one(
-            {"id": seed_item["id"]},
-            {
-                "$setOnInsert": {
-                    "id": seed_item["id"],
-                    "name": seed_item["name"],
-                    "icon_url": seed_item["icon_url"],
-                    "market_value_bgl": round(float(seed_item["market_value_bgl"]), 4),
-                    "created_at": now_iso(),
-                    "updated_at": now_iso(),
-                }
-            },
-            upsert=True,
-        )
+    if growtopia_seed_task is None or growtopia_seed_task.done():
+        growtopia_seed_task = asyncio.create_task(seed_growtopia_items())
+        logger.info("Scheduled background Growtopia seed upsert")
 
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    global growtopia_seed_task
+    if growtopia_seed_task and not growtopia_seed_task.done():
+        growtopia_seed_task.cancel()
+        try:
+            await growtopia_seed_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Error while stopping Growtopia seed task")
     client.close()
 
 
