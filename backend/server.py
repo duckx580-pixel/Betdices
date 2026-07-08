@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -7,11 +7,13 @@ import logging
 import uuid
 import jwt
 import uvicorn
+import secrets
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 
 ROOT_DIR = Path(__file__).parent
@@ -173,6 +175,198 @@ class BetReq(BaseModel):
 class ApproveReq(BaseModel):
     status: str  # approved | rejected
     admin_note: Optional[str] = None
+
+
+class CaseItemIn(BaseModel):
+    id: Optional[str] = None
+    name: str
+    value: float
+    probability_percentage: float
+
+
+class CaseUpsertReq(BaseModel):
+    name: str
+    image: Optional[str] = None
+    price_dl: float
+    is_active: bool = True
+    items: List[CaseItemIn]
+
+
+class BattleCreateReq(BaseModel):
+    selected_cases: List[str]
+    mode: str = "normal"  # normal | jackpot
+
+
+battle_connections: Dict[str, Set[WebSocket]] = {}
+
+
+def probability_to_basis(probability_percentage: float) -> int:
+    try:
+        value = Decimal(str(probability_percentage))
+    except (InvalidOperation, TypeError):
+        raise HTTPException(400, "Invalid probability value")
+    if value <= 0:
+        raise HTTPException(400, "Probability must be > 0")
+    basis = (value * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return int(basis)
+
+
+def normalize_case_items(items: List[CaseItemIn]) -> List[Dict[str, Any]]:
+    if not items:
+        raise HTTPException(400, "Case must contain at least one item")
+    normalized = []
+    total_basis = 0
+    for item in items:
+        if not item.name.strip():
+            raise HTTPException(400, "Case item name is required")
+        if item.value < 0:
+            raise HTTPException(400, "Case item value must be >= 0")
+        basis = probability_to_basis(item.probability_percentage)
+        total_basis += basis
+        normalized.append(
+            {
+                "id": item.id or str(uuid.uuid4()),
+                "name": item.name.strip(),
+                "value": round(float(item.value), 4),
+                "probability_percentage": float((Decimal(basis) / Decimal("100")).quantize(Decimal("0.01"))),
+                "probability_basis": basis,
+            }
+        )
+    if total_basis != 10000:
+        raise HTTPException(400, "Total probability_percentage must equal exactly 100.00")
+    return normalized
+
+
+async def ensure_case_exists(case_id: str) -> Dict[str, Any]:
+    case_doc = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    if not case_doc:
+        raise HTTPException(404, f"Case not found: {case_id}")
+    return case_doc
+
+
+async def create_battle_log(
+    battle_id: str,
+    event_type: str,
+    event_payload: Dict[str, Any],
+    actor_user_id: Optional[str] = None,
+    round_number: Optional[int] = None,
+) -> Dict[str, Any]:
+    doc = {
+        "id": str(uuid.uuid4()),
+        "battle_id": battle_id,
+        "event_type": event_type,
+        "event_payload": event_payload,
+        "round": round_number,
+        "actor_user_id": actor_user_id,
+        "created_at": now_iso(),
+    }
+    await db.battle_logs.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+async def battle_ws_connect(battle_id: str, websocket: WebSocket):
+    await websocket.accept()
+    battle_connections.setdefault(battle_id, set()).add(websocket)
+
+
+def battle_ws_disconnect(battle_id: str, websocket: WebSocket):
+    room = battle_connections.get(battle_id)
+    if not room:
+        return
+    room.discard(websocket)
+    if not room:
+        battle_connections.pop(battle_id, None)
+
+
+async def battle_ws_broadcast(battle_id: str, payload: Dict[str, Any]):
+    room = battle_connections.get(battle_id, set()).copy()
+    dead = []
+    for socket in room:
+        try:
+            await socket.send_json(payload)
+        except Exception:
+            dead.append(socket)
+    for socket in dead:
+        battle_ws_disconnect(battle_id, socket)
+
+
+def choose_weighted_player(weights: List[int]) -> int:
+    total = sum(weights)
+    if total <= 0:
+        return secrets.randbelow(len(weights))
+    roll = secrets.randbelow(total) + 1
+    cumulative = 0
+    for index, weight in enumerate(weights):
+        cumulative += weight
+        if roll <= cumulative:
+            return index
+    return len(weights) - 1
+
+
+async def open_case_service(case_id: str, user_id: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    case_doc = await db.cases.find_one({"id": case_id, "is_active": True}, {"_id": 0})
+    if not case_doc:
+        raise HTTPException(404, "Case not found or inactive")
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    price = round(float(case_doc.get("price_dl", 0)), 4)
+    current_dl = float(user.get("balance", {}).get("dl", 0))
+    if current_dl < price:
+        raise HTTPException(400, "Insufficient DL balance")
+
+    items = case_doc.get("items", [])
+    if not items:
+        raise HTTPException(400, "Case has no prizes")
+    weights = [int(i.get("probability_basis", 0)) for i in items]
+    if not all(w > 0 for w in weights) or sum(weights) != 10000:
+        raise HTTPException(400, "Case probability configuration is invalid")
+
+    chosen_index = choose_weighted_player(weights)
+    selected_item = items[chosen_index]
+    selected_value = round(float(selected_item.get("value", 0)), 4)
+    net = round(selected_value - price, 4)
+
+    await db.users.update_one(
+        {"id": user_id},
+        {"$inc": {"balance.dl": net}},
+    )
+    updated_user = await db.users.find_one({"id": user_id}, {"_id": 0})
+
+    open_doc = {
+        "id": str(uuid.uuid4()),
+        "case_id": case_doc["id"],
+        "case_name": case_doc["name"],
+        "case_price_dl": price,
+        "user_id": user["id"],
+        "username": user.get("username"),
+        "item": {
+            "id": selected_item["id"],
+            "name": selected_item["name"],
+            "value": selected_value,
+            "probability_percentage": selected_item["probability_percentage"],
+        },
+        "net": net,
+        "context": context or {},
+        "created_at": now_iso(),
+    }
+    await db.case_opens.insert_one(open_doc)
+    open_doc.pop("_id", None)
+    return {
+        "open": open_doc,
+        "user_balance": updated_user.get("balance", {"dl": 0, "bgl": 0, "wl": 0}),
+    }
+
+
+def recompute_totals(battle_doc: Dict[str, Any]) -> Dict[str, float]:
+    totals = {p["user_id"]: 0.0 for p in battle_doc.get("players", [])}
+    for round_data in battle_doc.get("round_results", []):
+        for result in round_data.get("results", []):
+            uid = result.get("user_id")
+            totals[uid] = round(float(totals.get(uid, 0)) + float(result.get("item_value", 0)), 4)
+    return totals
 
 
 # ---- Auth ----
@@ -499,6 +693,306 @@ async def game_history(user=Depends(get_current_user)):
     return items
 
 
+# ---- Cases ----
+@api.get("/cases")
+async def list_cases(active_only: bool = True):
+    query = {"is_active": True} if active_only else {}
+    items = await db.cases.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return items
+
+
+@api.get("/cases/{case_id}")
+async def get_case(case_id: str):
+    case_doc = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    if not case_doc:
+        raise HTTPException(404, "Case not found")
+    return case_doc
+
+
+@api.get("/cases/me/opens")
+async def my_case_opens(user=Depends(get_current_user)):
+    items = await db.case_opens.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return items
+
+
+@api.post("/cases/{case_id}/open")
+async def open_case(case_id: str, user=Depends(get_current_user)):
+    return await open_case_service(case_id, user["id"], {"source": "solo_case_open"})
+
+
+@api.post("/admin/cases")
+async def create_case(req: CaseUpsertReq, _=Depends(require_admin)):
+    if req.price_dl <= 0:
+        raise HTTPException(400, "price_dl must be > 0")
+    items = normalize_case_items(req.items)
+    now = now_iso()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": req.name.strip(),
+        "image": req.image,
+        "price_dl": round(req.price_dl, 4),
+        "is_active": req.is_active,
+        "items": items,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.cases.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.put("/admin/cases/{case_id}")
+async def update_case(case_id: str, req: CaseUpsertReq, _=Depends(require_admin)):
+    await ensure_case_exists(case_id)
+    if req.price_dl <= 0:
+        raise HTTPException(400, "price_dl must be > 0")
+    items = normalize_case_items(req.items)
+    update_doc = {
+        "name": req.name.strip(),
+        "image": req.image,
+        "price_dl": round(req.price_dl, 4),
+        "is_active": req.is_active,
+        "items": items,
+        "updated_at": now_iso(),
+    }
+    await db.cases.update_one({"id": case_id}, {"$set": update_doc})
+    updated = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    return updated
+
+
+# ---- Battles ----
+@api.get("/battles")
+async def list_battles(status: Optional[str] = None):
+    query = {}
+    if status:
+        query["battle_status"] = status
+    items = await db.battles.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return items
+
+
+@api.post("/battles")
+async def create_battle(req: BattleCreateReq, user=Depends(get_current_user)):
+    if req.mode not in ("normal", "jackpot"):
+        raise HTTPException(400, "Invalid mode")
+    if not req.selected_cases:
+        raise HTTPException(400, "selected_cases must contain at least one case")
+    for case_id in req.selected_cases:
+        await ensure_case_exists(case_id)
+    now = now_iso()
+    battle_doc = {
+        "id": str(uuid.uuid4()),
+        "players": [{"user_id": user["id"], "username": user["username"]}],
+        "selected_cases": req.selected_cases,
+        "current_round": 0,
+        "battle_status": "waiting",
+        "mode": req.mode,
+        "round_results": [],
+        "totals_by_player": {user["id"]: 0.0},
+        "winner_user_id": None,
+        "winner_meta": None,
+        "created_by": user["id"],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.battles.insert_one(battle_doc)
+    battle_doc.pop("_id", None)
+
+    log_doc = await create_battle_log(
+        battle_doc["id"],
+        "BattleCreated",
+        {"players": battle_doc["players"], "selected_cases": battle_doc["selected_cases"], "mode": battle_doc["mode"]},
+        actor_user_id=user["id"],
+    )
+    await battle_ws_broadcast(battle_doc["id"], {"type": log_doc["event_type"], "log": log_doc})
+    return battle_doc
+
+
+@api.get("/battles/{battle_id}")
+async def get_battle(battle_id: str):
+    battle_doc = await db.battles.find_one({"id": battle_id}, {"_id": 0})
+    if not battle_doc:
+        raise HTTPException(404, "Battle not found")
+    return battle_doc
+
+
+@api.get("/battles/{battle_id}/logs")
+async def get_battle_logs(battle_id: str):
+    items = await db.battle_logs.find({"battle_id": battle_id}, {"_id": 0}).sort("created_at", 1).to_list(1000)
+    return items
+
+
+@api.post("/battles/{battle_id}/join")
+async def join_battle(battle_id: str, user=Depends(get_current_user)):
+    battle_doc = await db.battles.find_one({"id": battle_id}, {"_id": 0})
+    if not battle_doc:
+        raise HTTPException(404, "Battle not found")
+    if battle_doc["battle_status"] != "waiting":
+        raise HTTPException(400, "Battle is not open for joining")
+
+    players = battle_doc.get("players", [])
+    if any(p["user_id"] == user["id"] for p in players):
+        return battle_doc
+    if len(players) >= 4:
+        raise HTTPException(400, "Battle is full")
+
+    players.append({"user_id": user["id"], "username": user["username"]})
+    totals = dict(battle_doc.get("totals_by_player", {}))
+    totals[user["id"]] = 0.0
+    await db.battles.update_one(
+        {"id": battle_id},
+        {"$set": {"players": players, "totals_by_player": totals, "updated_at": now_iso()}},
+    )
+    updated = await db.battles.find_one({"id": battle_id}, {"_id": 0})
+
+    log_doc = await create_battle_log(
+        battle_id,
+        "PlayerJoined",
+        {"user_id": user["id"], "username": user["username"], "player_count": len(players)},
+        actor_user_id=user["id"],
+    )
+    await battle_ws_broadcast(battle_id, {"type": log_doc["event_type"], "log": log_doc})
+    return updated
+
+
+@api.post("/battles/{battle_id}/start")
+async def start_battle(battle_id: str, user=Depends(get_current_user)):
+    battle_doc = await db.battles.find_one({"id": battle_id}, {"_id": 0})
+    if not battle_doc:
+        raise HTTPException(404, "Battle not found")
+    if battle_doc["battle_status"] != "waiting":
+        raise HTTPException(400, "Battle already started")
+    if not any(p["user_id"] == user["id"] for p in battle_doc.get("players", [])):
+        raise HTTPException(403, "Only participants can start this battle")
+    if len(battle_doc.get("players", [])) < 2:
+        raise HTTPException(400, "Need at least 2 players to start")
+
+    await db.battles.update_one(
+        {"id": battle_id},
+        {"$set": {"battle_status": "active", "updated_at": now_iso()}},
+    )
+    updated = await db.battles.find_one({"id": battle_id}, {"_id": 0})
+    log_doc = await create_battle_log(
+        battle_id,
+        "BattleStarted",
+        {"player_count": len(updated.get("players", []))},
+        actor_user_id=user["id"],
+    )
+    await battle_ws_broadcast(battle_id, {"type": log_doc["event_type"], "log": log_doc})
+    return updated
+
+
+@api.post("/battles/{battle_id}/rounds/next")
+async def play_next_round(battle_id: str, user=Depends(get_current_user)):
+    battle_doc = await db.battles.find_one({"id": battle_id}, {"_id": 0})
+    if not battle_doc:
+        raise HTTPException(404, "Battle not found")
+    if battle_doc["battle_status"] != "active":
+        raise HTTPException(400, "Battle is not active")
+    if not any(p["user_id"] == user["id"] for p in battle_doc.get("players", [])):
+        raise HTTPException(403, "Only participants can progress rounds")
+
+    current_round = int(battle_doc.get("current_round", 0))
+    selected_cases = battle_doc.get("selected_cases", [])
+    if current_round >= len(selected_cases):
+        raise HTTPException(400, "No rounds remaining")
+
+    round_case_id = selected_cases[current_round]
+    round_results = []
+    for player in battle_doc.get("players", []):
+        open_result = await open_case_service(
+            round_case_id,
+            player["user_id"],
+            {
+                "source": "battle",
+                "battle_id": battle_id,
+                "round": current_round + 1,
+                "mode": battle_doc.get("mode"),
+            },
+        )
+        opened = open_result["open"]
+        round_results.append(
+            {
+                "user_id": player["user_id"],
+                "username": player["username"],
+                "item_id": opened["item"]["id"],
+                "item_name": opened["item"]["name"],
+                "item_value": opened["item"]["value"],
+                "open_id": opened["id"],
+            }
+        )
+
+    battle_doc.setdefault("round_results", []).append(
+        {
+            "round": current_round + 1,
+            "case_id": round_case_id,
+            "results": round_results,
+            "created_at": now_iso(),
+        }
+    )
+    battle_doc["current_round"] = current_round + 1
+    battle_doc["totals_by_player"] = recompute_totals(battle_doc)
+
+    round_log = await create_battle_log(
+        battle_id,
+        "RoundResult",
+        {"round": current_round + 1, "case_id": round_case_id, "results": round_results, "totals": battle_doc["totals_by_player"]},
+        actor_user_id=user["id"],
+        round_number=current_round + 1,
+    )
+    await battle_ws_broadcast(battle_id, {"type": round_log["event_type"], "log": round_log})
+
+    if battle_doc["current_round"] >= len(selected_cases):
+        players = battle_doc.get("players", [])
+        totals = battle_doc.get("totals_by_player", {})
+        if battle_doc.get("mode") == "jackpot":
+            weighted_values = [max(int(round(float(totals.get(p["user_id"], 0)) * 100)), 0) for p in players]
+            winner_index = choose_weighted_player(weighted_values)
+            winner = players[winner_index]
+            battle_doc["winner_meta"] = {
+                "mode": "jackpot",
+                "weights": {p["user_id"]: weighted_values[idx] for idx, p in enumerate(players)},
+            }
+        else:
+            winner = max(players, key=lambda p: (float(totals.get(p["user_id"], 0)), -players.index(p)))
+            battle_doc["winner_meta"] = {
+                "mode": "normal",
+                "totals": totals,
+                "tie_breaker": "earliest_join",
+            }
+        battle_doc["winner_user_id"] = winner["user_id"]
+        battle_doc["battle_status"] = "finished"
+        winner_log = await create_battle_log(
+            battle_id,
+            "BattleWinner",
+            {
+                "winner_user_id": winner["user_id"],
+                "winner_username": winner["username"],
+                "mode": battle_doc.get("mode"),
+                "totals": totals,
+            },
+            round_number=battle_doc["current_round"],
+        )
+        await battle_ws_broadcast(battle_id, {"type": winner_log["event_type"], "log": winner_log})
+
+    battle_doc["updated_at"] = now_iso()
+    await db.battles.update_one(
+        {"id": battle_id},
+        {
+            "$set": {
+                "current_round": battle_doc["current_round"],
+                "round_results": battle_doc["round_results"],
+                "totals_by_player": battle_doc["totals_by_player"],
+                "battle_status": battle_doc["battle_status"],
+                "winner_user_id": battle_doc.get("winner_user_id"),
+                "winner_meta": battle_doc.get("winner_meta"),
+                "updated_at": battle_doc["updated_at"],
+            }
+        },
+    )
+    updated = await db.battles.find_one({"id": battle_id}, {"_id": 0})
+    return updated
+
+
 # ---- Admin ----
 @api.get("/admin/deposits")
 async def admin_deposits(status: Optional[str] = None, _=Depends(require_admin)):
@@ -609,6 +1103,18 @@ async def root():
     return {"message": "BetDice API", "status": "ok"}
 
 
+@app.websocket("/ws/battles/{battle_id}")
+async def battle_ws(websocket: WebSocket, battle_id: str):
+    await battle_ws_connect(battle_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        battle_ws_disconnect(battle_id, websocket)
+    except Exception:
+        battle_ws_disconnect(battle_id, websocket)
+
+
 app.include_router(api)
 
 app.add_middleware(
@@ -621,6 +1127,12 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+@app.on_event("startup")
+async def startup_indexes():
+    await db.battle_logs.create_index([("battle_id", 1), ("created_at", 1)])
+    await db.battles.create_index([("battle_status", 1), ("created_at", -1)])
 
 
 @app.on_event("shutdown")
