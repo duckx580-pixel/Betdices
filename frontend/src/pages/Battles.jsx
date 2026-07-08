@@ -7,6 +7,9 @@ export default function Battles() {
   const [cases, setCases] = useState([]);
   const [selectedCases, setSelectedCases] = useState([]);
   const [mode, setMode] = useState("normal");
+  const [playerSlots, setPlayerSlots] = useState("2");
+  const [addBots, setAddBots] = useState(false);
+  const [botCount, setBotCount] = useState("1");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -38,7 +41,13 @@ export default function Battles() {
       return;
     }
     try {
-      await battlesApi.create({ selected_cases: selectedCases, mode });
+      await battlesApi.create({
+        selected_cases: selectedCases,
+        mode,
+        player_slots: Number(playerSlots),
+        add_bots: addBots,
+        bot_count: addBots ? Number(botCount) : 0,
+      });
       setSelectedCases([]);
       await load();
     } catch (err) {
@@ -78,6 +87,45 @@ export default function Battles() {
             <option value="normal">Normal</option>
             <option value="jackpot">Jackpot</option>
           </select>
+          <label className="text-sm text-slate-300">Players</label>
+          <select
+            value={playerSlots}
+            onChange={(e) => setPlayerSlots(e.target.value)}
+            className="bg-[#0e1628] border border-white/10 rounded-lg px-3 h-9 text-sm"
+          >
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="inline-flex items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={addBots}
+              onChange={(e) => setAddBots(e.target.checked)}
+              className="accent-[#3583ff]"
+            />
+            Add Bots
+          </label>
+          {addBots ? (
+            <>
+              <label className="text-sm text-slate-300">Bots</label>
+              <select
+                value={botCount}
+                onChange={(e) => setBotCount(e.target.value)}
+                className="bg-[#0e1628] border border-white/10 rounded-lg px-3 h-9 text-sm"
+              >
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+              </select>
+              <p className="text-xs text-slate-400">Unfilled slots are auto-filled by bots after 30 seconds.</p>
+            </>
+          ) : null}
           <button onClick={createBattle} className="ml-auto h-9 px-4 rounded-lg bg-[#3583ff] font-semibold">
             Create
           </button>
@@ -102,7 +150,7 @@ export default function Battles() {
                 <div>
                   <p className="font-semibold">Battle #{battle.id.slice(0, 8)}</p>
                   <p className="text-xs text-slate-400">
-                    {battle.players?.length || 0} players • {battle.selected_cases?.length || 0} rounds • {battle.mode}
+                    {battle.players?.length || 0}/{battle.player_slots || 2} players • {battle.selected_cases?.length || 0} rounds • {battle.mode}
                   </p>
                 </div>
                 <span className="text-xs uppercase text-slate-300">{battle.battle_status}</span>

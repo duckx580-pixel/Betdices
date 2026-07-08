@@ -3,8 +3,8 @@ import { useParams } from "react-router-dom";
 import { battlesApi, WS_BASE, logApiError } from "../lib/api";
 
 const formatEvent = (log) => {
-  if (log.event_type === "PlayerJoined") return `${log.event_payload?.username || "Player"} joined the battle`;
-  if (log.event_type === "RoundResult") return `Round ${log.event_payload?.round} completed`;
+  if (log.event_type === "PlayerJoined") return `${log.event_payload?.username || "Player"}${log.event_payload?.is_bot ? " [BOT]" : ""} joined the battle`;
+  if (log.event_type === "RoundResult") return `Round ${log.event_payload?.round} pulls`;
   if (log.event_type === "BattleWinner") return `${log.event_payload?.winner_username || "Player"} won the battle`;
   if (log.event_type === "BattleStarted") return "Battle started";
   if (log.event_type === "BattleCreated") return "Battle created";
@@ -77,7 +77,7 @@ export default function BattleRoom() {
       <div className="rounded-2xl bg-[#131c2f] border border-white/5 p-4">
         <h1 className="text-2xl font-extrabold">Battle #{battle.id.slice(0, 8)}</h1>
         <p className="text-slate-300 text-sm mt-1">
-          Mode: {battle.mode} • Status: {battle.battle_status} • Round {battle.current_round}/{battle.selected_cases?.length || 0}
+          Mode: {battle.mode} • Status: {battle.battle_status} • Players {battle.players?.length || 0}/{battle.player_slots || 2} • Round {battle.current_round}/{battle.selected_cases?.length || 0}
         </p>
         <div className="flex gap-2 mt-4 flex-wrap">
           <button onClick={join} className="h-9 px-4 rounded-lg bg-[#20314d] text-sm font-semibold">Join</button>
@@ -95,8 +95,8 @@ export default function BattleRoom() {
         <div className="space-y-2">
           {sortedTotals.map((row) => (
             <div key={row.user_id} className="flex items-center justify-between border border-white/10 rounded-lg px-3 py-2">
-              <span>{row.username}</span>
-              <span className="text-slate-300">{row.total.toFixed(2)} DL</span>
+              <span>{row.username}{row.is_bot ? " [BOT]" : ""}</span>
+              <span className="text-slate-300">{row.total.toFixed(2)} BGL</span>
             </div>
           ))}
         </div>
@@ -108,6 +108,15 @@ export default function BattleRoom() {
           {logs.map((log) => (
             <div key={log.id} className="border border-white/10 rounded-lg px-3 py-2">
               <p className="text-sm">{formatEvent(log)}</p>
+              {log.event_type === "RoundResult" && Array.isArray(log.event_payload?.results) ? (
+                <div className="mt-1 space-y-1">
+                  {log.event_payload.results.map((result) => (
+                    <p key={`${log.id}-${result.user_id}`} className="text-xs text-slate-300">
+                      {result.username}{result.is_bot ? " [BOT]" : ""} pulled {result.item_name} ({Number(result.item_value || 0).toFixed(2)} BGL)
+                    </p>
+                  ))}
+                </div>
+              ) : null}
               <p className="text-xs text-slate-400">{new Date(log.created_at).toLocaleString()}</p>
             </div>
           ))}

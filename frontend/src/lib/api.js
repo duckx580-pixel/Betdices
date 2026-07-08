@@ -89,6 +89,9 @@ export const adminApi = {
   decideWithdraw: (id, status, admin_note) =>
     api.post(`/admin/withdraws/${id}/decide`, { status, admin_note }).then((r) => r.data),
   stats: () => api.get("/admin/stats").then((r) => r.data),
+  growtopiaItems: () => api.get("/admin/growtopia-items").then((r) => r.data),
+  createCase: (payload) => api.post("/admin/cases", payload).then((r) => r.data),
+  updateCase: (caseId, payload) => api.put(`/admin/cases/${caseId}`, payload).then((r) => r.data),
 };
 
 export const chatApi = {
