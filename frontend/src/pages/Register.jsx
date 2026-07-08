@@ -26,7 +26,17 @@ export default function Register() {
       await register(growId.trim().toUpperCase(), password);
       navigate("/", { replace: true });
     } catch (err) {
-      toast.error(err.response?.data?.detail || "Registration failed");
+      const responseData = err?.response?.data;
+      const serverMessage = [
+        typeof responseData === "string" ? responseData : null,
+        responseData?.message,
+        responseData?.detail,
+        responseData?.msg,
+        responseData?.error,
+        err?.message,
+      ].find((value) => typeof value === "string" && value.trim().length > 0);
+
+      toast.error(serverMessage || "Registration failed");
     } finally {
       setBusy(false);
     }
