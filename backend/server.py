@@ -835,12 +835,21 @@ async def list_growtopia_items(
     q: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
+    include_seeds: bool = False,
 ):
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
-    query: Dict[str, Any] = {}
+    filters: List[Dict[str, Any]] = []
     if q and q.strip():
-        query["name"] = {"$regex": re.escape(q.strip()), "$options": "i"}
+        filters.append({"name": {"$regex": re.escape(q.strip()), "$options": "i"}})
+    if not include_seeds:
+        filters.append({"name": {"$not": {"$regex": r"seed\s*$", "$options": "i"}}})
+    if len(filters) == 1:
+        query: Dict[str, Any] = filters[0]
+    elif filters:
+        query = {"$and": filters}
+    else:
+        query = {}
     total = await db.growtopia_items.count_documents(query)
     items = await db.growtopia_items.find(query, {"_id": 0}).sort("name", 1).skip(offset).limit(limit).to_list(limit)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
@@ -935,9 +944,10 @@ async def list_admin_growtopia_items(
     q: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
+    include_seeds: bool = False,
     _=Depends(require_admin),
 ):
-    return await list_growtopia_items(q=q, limit=limit, offset=offset)
+    return await list_growtopia_items(q=q, limit=limit, offset=offset, include_seeds=include_seeds)
 
 
 @api.post("/admin/growtopia-items/import")

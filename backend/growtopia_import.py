@@ -22,6 +22,8 @@ def normalize_growtopia_import_row(raw: Dict[str, Any], row_number: int) -> Dict
         raise ValueError("id is required")
     market_value_bgl_raw = raw.get("market_value_bgl")
     if market_value_bgl_raw is None or str(market_value_bgl_raw).strip() == "":
+        market_value_bgl_raw = raw.get("price")
+    if market_value_bgl_raw is None or str(market_value_bgl_raw).strip() == "":
         raise ValueError("market_value_bgl is required")
     try:
         market_value_bgl = round(float(market_value_bgl_raw), 4)
@@ -32,8 +34,6 @@ def normalize_growtopia_import_row(raw: Dict[str, Any], row_number: int) -> Dict
     icon_url = str(raw.get("icon_url", "")).strip()
     if not icon_url:
         raise ValueError("icon_url is required")
-    if not re.match(r"^https?://", icon_url, re.IGNORECASE):
-        raise ValueError("icon_url must be an absolute http(s) URL")
     return {
         "id": item_id,
         "name": item_name,
