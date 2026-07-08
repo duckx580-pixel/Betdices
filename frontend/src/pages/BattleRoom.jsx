@@ -37,8 +37,21 @@ export default function BattleRoom() {
 
   useEffect(() => {
     const ws = new WebSocket(`${WS_BASE}/ws/battles/${battleId}`);
-    ws.onmessage = async () => {
-      await load();
+    ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload?.log?.id) {
+          setLogs((prev) => {
+            if (prev.some((item) => item.id === payload.log.id)) return prev;
+            return [...prev, payload.log];
+          });
+        }
+        if (payload?.battle?.id) {
+          setBattle(payload.battle);
+        }
+      } catch {
+        // ignore malformed message
+      }
     };
     ws.onerror = () => {
       setError((prev) => prev || "Live updates disconnected. Showing history fallback.");
@@ -58,15 +71,12 @@ export default function BattleRoom() {
 
   const join = async () => {
     await battlesApi.join(battleId);
-    await load();
   };
   const start = async () => {
     await battlesApi.start(battleId);
-    await load();
   };
   const nextRound = async () => {
     await battlesApi.nextRound(battleId);
-    await load();
   };
 
   if (loading) return <p className="pt-2 text-slate-400">Loading battle...</p>;
