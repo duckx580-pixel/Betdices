@@ -5,6 +5,14 @@ import { adminApi, casesApi } from "../lib/api";
 import { toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
+const resolveItemIconUrl = (iconUrl) => {
+  if (!iconUrl) return "";
+  const raw = String(iconUrl).trim();
+  if (!raw) return "";
+  if (/^(https?:)?\/\//i.test(raw) || raw.startsWith("data:") || raw.startsWith("blob:")) return raw;
+  return raw.startsWith("/") ? raw : `/${raw}`;
+};
+
 export default function Admin() {
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
@@ -16,14 +24,30 @@ export default function Admin() {
 
   const load = useCallback(async () => {
     try {
+      const loadGrowtopiaItems = async () => {
+        const limit = 500;
+        let offset = 0;
+        let total = 0;
+        let merged = [];
+        do {
+          const resp = await adminApi.growtopiaItems({ limit, offset, include_seeds: false });
+          const chunk = resp?.items || [];
+          total = Number(resp?.total || 0);
+          merged = merged.concat(chunk);
+          offset += limit;
+          if (!chunk.length) break;
+        } while (merged.length < total);
+        return merged;
+      };
+
       const [s, d, w, gtItems, caseList] = await Promise.all([
         adminApi.stats(),
         adminApi.deposits(),
         adminApi.withdraws(),
-        adminApi.growtopiaItems(),
+        loadGrowtopiaItems(),
         casesApi.list(false),
       ]);
-      setStats(s); setDeposits(d); setWithdraws(w); setGrowtopiaItems(gtItems?.items || gtItems || []); setAllCases(caseList || []);
+      setStats(s); setDeposits(d); setWithdraws(w); setGrowtopiaItems(gtItems || []); setAllCases(caseList || []);
     } catch (e) {
       toast.error("Failed to load admin data");
     }
@@ -381,7 +405,7 @@ function CaseCreatorPanel({ growtopiaItems, allCases, onCreated }) {
         <div className="rounded-xl border border-white/10 bg-[#0e1628] p-3 space-y-2">
           <p className="text-xs text-slate-400">Bulk import Growtopia items (.json/.csv)</p>
           <input type="file" accept=".json,.csv" onChange={importItems} disabled={uploading} className="text-xs text-slate-300" />
-          <p className="text-[11px] text-slate-500">Required fields: id (optional), name, market_value_bgl, icon_url.</p>
+          <p className="text-[11px] text-slate-500">Required fields: id (optional), name, market_value_bgl or price, icon_url.</p>
         </div>
         <input
           value={itemSearch}
@@ -405,6 +429,28 @@ function CaseCreatorPanel({ growtopiaItems, allCases, onCreated }) {
             {submitting ? "Saving..." : editingCaseId ? "Save Case" : "Create Case"}
           </button>
         </div>
+        <div className="max-h-64 overflow-y-auto rounded-xl border border-white/10 bg-[#0e1628] p-2 space-y-1">
+          {filteredGrowtopiaItems.slice(0, 80).map((item) => (
+            <div key={item.id} className="flex items-center gap-3 rounded-lg px-2 py-1.5 bg-[#111a2e] border border-white/5">
+              {resolveItemIconUrl(item.icon_url) ? (
+                <img src={resolveItemIconUrl(item.icon_url)} alt={item.name} className="w-8 h-8 rounded object-cover" />
+              ) : (
+                <div className="w-8 h-8 rounded bg-slate-700" />
+              )}
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold truncate">{item.name}</p>
+                <p className="text-xs text-slate-400">{Number(item.market_value_bgl || 0).toFixed(2)} BGL</p>
+              </div>
+              <button
+                onClick={() => addItem(item.id)}
+                disabled={selectedItems.some((entry) => entry.growtopia_item_id === item.id)}
+                className="text-xs px-2 py-1 rounded border border-[#3583ff]/40 text-[#7cb0ff] disabled:opacity-40"
+              >
+                Add
+              </button>
+            </div>
+          ))}
+        </div>
         <div className="text-xs text-slate-400">
           Preview: {selectedItems.length} items • Combined item value {totalPreviewValue.toFixed(2)} BGL
         </div>
@@ -414,7 +460,7 @@ function CaseCreatorPanel({ growtopiaItems, allCases, onCreated }) {
             if (!item) return null;
             return (
               <div key={entry.growtopia_item_id} className="flex items-center gap-3 bg-[#0e1628] border border-white/10 rounded-lg p-2">
-                {item.icon_url ? <img src={item.icon_url} alt={item.name} className="w-9 h-9 rounded object-cover" /> : <div className="w-9 h-9 rounded bg-slate-700" />}
+                {resolveItemIconUrl(item.icon_url) ? <img src={resolveItemIconUrl(item.icon_url)} alt={item.name} className="w-9 h-9 rounded object-cover" /> : <div className="w-9 h-9 rounded bg-slate-700" />}
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold truncate">{item.name}</p>
                   <p className="text-xs text-slate-400">{Number(item.market_value_bgl || 0).toFixed(2)} BGL</p>

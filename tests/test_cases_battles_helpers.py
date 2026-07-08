@@ -30,6 +30,18 @@ def test_parse_growtopia_import_csv_success():
     assert parsed["rejected"] == []
 
 
+def test_parse_growtopia_import_accepts_price_alias_and_relative_icon_url():
+    raw = (
+        "id,name,price,icon_url\n"
+        "rayman-fist,Rayman's Fist,355,rayman_fist.png\n"
+    ).encode("utf-8")
+    parsed = parse_growtopia_import_file("items.csv", raw)
+    assert parsed["total_rows"] == 1
+    assert len(parsed["items"]) == 1
+    assert parsed["items"][0]["market_value_bgl"] == 355
+    assert parsed["items"][0]["icon_url"] == "rayman_fist.png"
+
+
 def test_probability_to_points_constraints():
     assert probability_to_points(12.3456) == 123456
     with pytest.raises(Exception):
