@@ -1,8 +1,8 @@
 import axios from "axios";
 
-const BACKEND_URL = "https://hammerhead-app-rio26.ondigitalocean.app";
+const API_BASE_URL = "https://hammerhead-app-rio26.ondigitalocean.app";
 const TOKEN_KEY = "betdice_token";
-export const API = `${BACKEND_URL}/api`;
+export const API = `${API_BASE_URL}/api`;
 
 export const api = axios.create({ baseURL: API });
 
